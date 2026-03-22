@@ -4,78 +4,83 @@
 
 # Nerve
 
-**The cockpit for your [OpenClaw](https://github.com/openclaw/openclaw) agents.**
+**The cockpit OpenClaw deserves.**
 
-[![MIT License](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
-![Node 22+](https://img.shields.io/badge/node-%3E%3D22-brightgreen)
-[![Discord](https://img.shields.io/discord/1474924531683688478?color=5865F2&logo=discord&logoColor=white&label=Discord)](https://discord.gg/Sh9ZGtctva)
+*OpenClaw is powerful. Nerve is the interface that makes people say “oh, now I get it."*
+
+
+[![Star Nerve on GitHub](https://img.shields.io/github/stars/daggerhashimoto/openclaw-nerve?style=for-the-badge&logo=github&label=Star%20Nerve%20on%20GitHub&color=0f172a)](https://github.com/daggerhashimoto/openclaw-nerve)
+[![MIT License](https://img.shields.io/badge/license-MIT-blue?style=for-the-badge)](LICENSE)
+[![Discord](https://img.shields.io/discord/1474924531683688478?style=for-the-badge&color=5865F2&logo=discord&logoColor=white&label=Discord)](https://discord.gg/Sh9ZGtctva)
 
 </div>
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/daggerhashimoto/openclaw-nerve/master/install.sh | bash
 ```
+> *Run the installer, live in 60 seconds*
 
-## What is Nerve?
-
-You can already chat with your OpenClaw agent through webchat, Telegram, WhatsApp, Discord. Nerve is what you open when chatting isn't enough.
-
-Nerve is a self-hosted web UI for [OpenClaw](https://github.com/openclaw/openclaw) AI agents. Voice conversations, live workspace editing, inline charts, cron scheduling, and full token-level visibility. One install script. Running in 30 seconds.
-
-## Why Nerve?
-
-Messaging channels are great for chatting. But you can't watch charts render in real-time, edit your agent's workspace mid-conversation, browse its files, manage tasks on a kanban board, or monitor token spend from a Telegram window. Nerve is the dashboard that gives you the full picture.
 
 <div align="center">
 
-![Nerve Demo](docs/demo.gif)
+<https://github.com/user-attachments/assets/9610184b-c7c2-4336-8e34-aafd166cde92>
 
 </div>
 
-## What makes it different
+## Why Nerve exists
 
-### Voice that actually works
-Talk to your agent in 12 languages. Explicit language selection (no flaky auto-detect), wake-word activation, per-language stop/cancel phrases, and on-device Whisper transcription with model selection (tiny, base, small) plus GPU detection. No API key needed. Multi-provider TTS with Edge, OpenAI, and Replicate.
+Chat is great for talking to agents.
+It is not enough for operating them.
 
-### Full workspace visibility
-Your sub-agent sessions, workspace files, memory, config, tools. All visible, all editable, all live. No file hunting, no guessing what it remembers.
+The moment you care about visibility, control and coordination over your agents, the thread gets too small. You want the workspace, sessions, taskboard, editor, usage, and agent context in one place.
 
-### Kanban task board
-Drag-and-drop task management with agent execution, review workflow, and proposal inbox. Create tasks, assign them to your agent, and watch the work happen — all from a visual board.
+*Nerve is that place.*
 
-### Responsive by default
-Nerve adapts cleanly across desktop, tablet, and mobile, with touch-friendly controls on smaller screens and no core workflow loss.
+## Why it feels different
 
-### Live charts from a chat message
-Your agent can drop interactive TradingView charts, candlestick plots, and data visualizations directly into the conversation. Say "show me gold this year" and get a real chart, not a code block.
+### ✨ Fleet control, not just chat
+Run multiple agents from one place. Each agent can have its own workspace, subagents, memory, identity, soul, and skills, while Nerve gives you a single control plane to switch context, inspect state, and operate the whole fleet.
 
-### Cron and scheduling from the UI
-Create recurring jobs and one-shot reminders. Every scheduled run shows up as its own session in the sidebar. You can watch it execute live, read the full transcript, and see exactly what it did.
+### ✨ Voice that feels built in
+Push-to-talk, wake word flows, explicit language selection, local Whisper transcription, multilingual stop and cancel phrases, and multiple TTS providers. Voice is part of the product, not an afterthought.
 
-## Everything else
+### ✨ Full agent operating context
+Each agent can have its own workspace, memory, identity, soul, and skills. Nerve lets you inspect, edit, and manage that context live, without guessing what an agent knows, where it works, or how it is configured.
 
-| | |
+### ✨ A real operating layer
+Crons, session trees, kanban workflows, review loops, proposal inboxes, and model overrides. Nerve gives agent work an operating surface instead of leaving it trapped inside chat history.
+
+### ✨ Rich live output
+Charts, diffs, previews, syntax-highlighted code, structured tool rendering, and streaming UI that makes agent responses easier to inspect.
+
+><details>
+>
+> <summary>What you can do with it</summary>
+> 
+> - **Talk to your agent by voice** and hear it answer back naturally
+> - **Browse and edit the workspace live** while the conversation is still happening
+> - **Watch cron runs as separate sessions** instead of treating automation like a black box
+> - **Delegate work onto a kanban board** and review what came back
+> - **Ask for a chart** and get a real chart, not a code block pretending to be one
+> - **Track token usage, costs, and context pressure** while long tasks run
+> - **Inspect subagent activity** without losing the main thread
+> - **Switch between per-agent workspaces and memory** without losing context
+> - **Inspect each agent’s identity, soul, and skills** from the UI
+> - **Delegate subagent work inside a larger agent fleet** instead of treating everything as one thread
+
+</details>
+
+## Capability snapshot
+
+| Area | Highlights |
 |---|---|
-| **Voice I/O** | Push-to-talk + wake word, live transcription preview, language-aware stop/cancel phrases, local Whisper model picker, TTS providers (Edge/OpenAI/Replicate) |
-| **Streaming chat** | Markdown, syntax highlighting, diff views, image paste, file previews. All rendering as it streams |
-| **File browser** | Browse your workspace, rename, move, trash, and restore files. Open files in tabs. Support for custom workspace roots via `FILE_BROWSER_ROOT` |
-| **Built-in editor** | CodeMirror editor with syntax highlighting, conflict-safe saves, and automatic lock protection during concurrent agent edits |
-| **Multi-session** | Session tree with sub-agents, per-session model overrides, unread indicators |
-| **Kanban board** | Drag-and-drop task management with agent execution, review workflow, and proposal inbox |
-| **Responsive UI** | Fully responsive layout across desktop, tablet, and mobile with touch-friendly controls |
-| **Sub-agents** | Spawn background workers with custom models and reasoning levels |
-| **Monitoring** | Token usage, context window meter, cost tracking, activity logs |
-| **Command palette** | Cmd+K to search, switch sessions, change models. Keyboard-first |
-| **Search** | Full-text search across all messages in the current session |
-| **Images** | Paste from clipboard, drag & drop files, full-screen lightbox with download |
-| **Skills browser** | Browse installed skills, check status and requirements from the workspace panel |
-| **Local STT** | On-device Whisper — tiny, base, or small models with multilingual support, explicit language selection, GPU detection, and auto-download. No API key needed |
-| **Code actions** | Copy or save-to-file buttons on every code block |
-| **API key management** | Add provider keys from settings — writes to .env and hot-reloads, no restart needed |
-| **14 themes** | Dark, light, and everything in between. Resizable panels, custom fonts, adjustable font size |
-| **Auto-updater** | Built-in updater with automatic rollback. One command to update, verify, and restart |
-
-## Get Started
+| **Agent fleet** | Run multiple agents from one control plane, each with its own workspace, subagents, memory, identity, soul, and skills |
+| **Interaction** | Streaming chat, markdown, syntax highlighting, diff views, image paste, file previews, voice input, TTS, live transcription preview |
+| **Workspace** | Per-agent file browser, tabbed editor, memory editing, config editing, skills browser |
+| **Operations** | Session tree, subagents, cron scheduling, kanban task board, review flow, proposal inbox, model overrides |
+| **Observability** | Token usage, cost tracking, context meter, agent logs, event logs |
+| **Polish** | Command palette, responsive UI, 14 themes, hot-reloadable settings, updater with rollback |
+## Get started
 
 ### One command
 
@@ -83,85 +88,96 @@ Create recurring jobs and one-shot reminders. Every scheduled run shows up as it
 curl -fsSL https://raw.githubusercontent.com/daggerhashimoto/openclaw-nerve/master/install.sh | bash
 ```
 
-The installer handles dependencies, cloning, building, and launching. It runs a setup wizard that auto-detects your gateway token and walks you through configuration.
+> *The installer handles dependencies, clone, build, and then usually hands off straight into the setup wizard. Guided access modes include localhost, LAN, Tailscale tailnet IP, and Tailscale Serve.*
+
 
 ### Pick your setup
 
-- **[Run everything on one machine](docs/DEPLOYMENT-A.md)**
-- **[Use a cloud Gateway with Nerve on your laptop](docs/DEPLOYMENT-B.md)**
-- **[Run both Nerve and Gateway in the cloud](docs/DEPLOYMENT-C.md)**
+- **[Local](docs/DEPLOYMENT-A.md)** — Run Nerve and Gateway on one machine
+- **[Hybrid](docs/DEPLOYMENT-B.md)** — Keep Nerve local, run Gateway in the cloud
+- **[Cloud](docs/DEPLOYMENT-C.md)** — Run Nerve and Gateway in the cloud
 
-### Manual install
+<details><summary><strong>Manual install</strong></summary>
 
 ```bash
 git clone https://github.com/daggerhashimoto/openclaw-nerve.git
 cd openclaw-nerve
 npm install
-npm run setup    # interactive wizard — configures .env
-npm run prod     # builds and starts the server
+npm run setup
+npm run prod
 ```
 
-### Updating
+</details>
+
+
+
+<details><summary><strong>Updating</strong></summary>
+
 
 ```bash
 npm run update -- --yes
 ```
 
-Fetches the latest release, rebuilds, restarts, and verifies health. Auto-rolls back on failure. See [docs/UPDATING.md](docs/UPDATING.md) for flags and details.
+Fetches the latest release, rebuilds, restarts, verifies health, and rolls back automatically on failure.
 
-### Development
+</details>
+
+<details><summary><strong>Development</strong></summary>
 
 ```bash
-npm run dev            # frontend — Vite HMR on :3080
-npm run dev:server     # backend — watch mode on :3081
+npm run dev # frontend — Vite HMR on :3080
+npm run dev:server # backend — watch mode on :3081
 ```
 
-**Requires:** Node.js 22+ and an [OpenClaw](https://github.com/openclaw/openclaw) gateway.
+**Requires:** Node.js 22+ and an OpenClaw gateway.
+</details>
 
-## How it works
 
-```
+## How it fits into OpenClaw
+
+Nerve sits in front of the gateway and gives you a richer operating surface in the browser.
+
+```text
 Browser ─── Nerve (:3080) ─── OpenClaw Gateway (:18789)
-  │            │
-  ├─ WS ──────┤  proxied to gateway
-  ├─ SSE ─────┤  file watchers, real-time sync
-  └─ REST ────┘  files, memories, TTS, models
+ │ │
+ ├─ WS ──────┤ proxied to gateway
+ ├─ SSE ─────┤ file watchers, real-time sync
+ └─ REST ────┘ files, memories, TTS, models
 ```
 
-Nerve proxies WebSocket traffic to your gateway and adds its own REST layer.
+OpenClaw remains the engine. Nerve gives it a cockpit.
 
-**Frontend:** React 19 · Tailwind CSS 4 · shadcn/ui · Vite 7
+**Frontend:** React 19 · Tailwind CSS 4 · shadcn/ui · Vite 7 
 **Backend:** Hono 4 on Node.js
 
 ## Security
 
-Nerve binds to `127.0.0.1` (localhost) by default — only you can access it. When you expose it to the network (`HOST=0.0.0.0`), built-in password authentication protects all endpoints. The setup wizard auto-prompts for a password when network access is configured.
+Nerve binds to `127.0.0.1` by default, so it stays local unless you choose to expose it.
 
-- **Session cookies** — `HttpOnly`, `SameSite=Strict`, HMAC-SHA256 signed
-- **Password storage** — scrypt with 32-byte salt
-- **WebSocket auth** — cookie verified on upgrade
-- **Gateway token injection** — Automatically injected server-side for trusted connections
+When you bind it to the network (`HOST=0.0.0.0`), built-in password authentication protects the UI and its endpoints. Sessions use signed cookies, passwords are stored as hashes, WebSocket upgrades are authenticated, and trusted connections can use server-side gateway token injection.
 
-See [Security](docs/SECURITY.md) for the full threat model.
+For the full threat model and hardening details, see **[docs/SECURITY.md](docs/SECURITY.md)**.
 
-## Docs
+## Documentation
 
-| | |
-|---|---|
-| **[Architecture](docs/ARCHITECTURE.md)** | How the codebase is organized |
-| **[Configuration](docs/CONFIGURATION.md)** | Every `.env` variable explained |
-| **[Deployment Guides](docs/README.md#deployment-guides)** | Practical guides for local, remote Gateway, and cloud setups |
-| **[Tailscale Guide](docs/TAILSCALE.md)** | Add Tailscale to an existing install, with tailnet IP and Serve paths |
-| **[Agent Markers](docs/AGENT-MARKERS.md)** | TTS markers, inline charts, and how agents render rich UI |
-| **[Security](docs/SECURITY.md)** | What's locked down and how |
-| **[API](docs/API.md)** | REST and WebSocket endpoints |
-| **[Contributing](CONTRIBUTING.md)** | Dev setup, code style, PRs |
-| **[Troubleshooting](docs/TROUBLESHOOTING.md)** | Common issues and fixes |
-| **[Changelog](CHANGELOG.md)** | Release notes and shipped changes |
+- **[Architecture](docs/ARCHITECTURE.md)** — codebase structure and system design
+- **[Configuration](docs/CONFIGURATION.md)** — `.env` variables and setup behavior
+- **[Deployment Guides](docs/README.md)** — local, hybrid, and cloud setups
+- **[Agent Markers](docs/AGENT-MARKERS.md)** — TTS, charts, kanban markers, and rich UI output
+- **[Troubleshooting](docs/TROUBLESHOOTING.md)** — common issues and fixes
+- **[Tailscale Guide](docs/TAILSCALE.md)** — private remote access via tailnet IP or Tailscale Serve
+- **[Contributing](CONTRIBUTING.md)** — development workflow and pull requests
+- **[Changelog](CHANGELOG.md)** — release notes and shipped changes
 
 ## Community
 
-Join the [Nerve Discord](https://discord.gg/Sh9ZGtctva) — get help, share your setup, report bugs, and follow development.
+If this is the kind of interface you want around your OpenClaw setup, give the repo a star, contribute and keep an eye on it.
+
+Join the **[Nerve Discord](https://discord.gg/Sh9ZGtctva)** to get help, discuss, share your setup, and follow development.
+
+### People building Nerve
+
+[![Contributors](https://contrib.rocks/image?repo=daggerhashimoto/openclaw-nerve)](https://github.com/daggerhashimoto/openclaw-nerve/graphs/contributors)
 
 ## License
 
