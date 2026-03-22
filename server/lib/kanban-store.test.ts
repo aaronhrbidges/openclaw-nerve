@@ -16,8 +16,14 @@ import type { KanbanTask } from './kanban-store.js';
 let store: KanbanStore;
 let tmpDir: string;
 let filePath: string;
+let originalNerveDataDir: string | undefined;
+let originalNerveProjectRoot: string | undefined;
+let originalCwd: string;
 
 beforeEach(async () => {
+  originalNerveDataDir = process.env.NERVE_DATA_DIR;
+  originalNerveProjectRoot = process.env.NERVE_PROJECT_ROOT;
+  originalCwd = process.cwd();
   tmpDir = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'kanban-test-'));
   filePath = path.join(tmpDir, 'tasks.json');
   store = new KanbanStore(filePath);
@@ -25,6 +31,11 @@ beforeEach(async () => {
 });
 
 afterEach(async () => {
+  if (originalNerveDataDir === undefined) delete process.env.NERVE_DATA_DIR;
+  else process.env.NERVE_DATA_DIR = originalNerveDataDir;
+  if (originalNerveProjectRoot === undefined) delete process.env.NERVE_PROJECT_ROOT;
+  else process.env.NERVE_PROJECT_ROOT = originalNerveProjectRoot;
+  process.chdir(originalCwd);
   await fs.promises.rm(tmpDir, { recursive: true, force: true });
 });
 
@@ -1067,5 +1078,120 @@ describe('migration', () => {
     fs.writeFileSync(filePath, JSON.stringify({ meta: { schemaVersion: 1 } }));
     const result = await store.listTasks();
     expect(result.total).toBe(0);
+  });
+});
+
+describe('default path and legacy migration', () => {
+  it('stores default data under NERVE_DATA_DIR/kanban', async () => {
+    process.env.NERVE_DATA_DIR = path.join(tmpDir, 'nerve-data');
+    process.env.NERVE_PROJECT_ROOT = path.join(tmpDir, 'project');
+
+    const defaultStore = new KanbanStore();
+    await defaultStore.init();
+
+    const canonicalPath = path.join(process.env.NERVE_DATA_DIR, 'kanban', 'tasks.json');
+    expect(fs.existsSync(canonicalPath)).toBe(true);
+
+    const raw = JSON.parse(fs.readFileSync(canonicalPath, 'utf-8'));
+    expect(raw.tasks).toEqual([]);
+  });
+
+  it('migrates legacy server-dist data into the canonical store', async () => {
+    const projectRoot = path.join(tmpDir, 'project');
+    const legacyPath = path.join(projectRoot, 'server-dist', 'data', 'kanban', 'tasks.json');
+    process.env.NERVE_DATA_DIR = path.join(tmpDir, 'nerve-data');
+    process.env.NERVE_PROJECT_ROOT = projectRoot;
+
+    const legacyStore = new KanbanStore(legacyPath);
+    await legacyStore.init();
+    await legacyStore.createTask({ title: 'Recovered from server-dist', createdBy: 'operator' });
+
+    const defaultStore = new KanbanStore();
+    await defaultStore.init();
+
+    const result = await defaultStore.listTasks();
+    expect(result.total).toBe(1);
+    expect(result.items[0].title).toBe('Recovered from server-dist');
+    expect(fs.existsSync(path.join(process.env.NERVE_DATA_DIR, 'kanban', 'audit.log'))).toBe(true);
+  });
+
+  it('lazy-initializes and migrates before reads', async () => {
+    const projectRoot = path.join(tmpDir, 'project');
+    const legacyPath = path.join(projectRoot, 'server-dist', 'data', 'kanban', 'tasks.json');
+    process.env.NERVE_DATA_DIR = path.join(tmpDir, 'nerve-data');
+    process.env.NERVE_PROJECT_ROOT = projectRoot;
+
+    const legacyStore = new KanbanStore(legacyPath);
+    await legacyStore.init();
+    await legacyStore.createTask({ title: 'Recovered without explicit init', createdBy: 'operator' });
+
+    const defaultStore = new KanbanStore();
+    const result = await defaultStore.listTasks();
+
+    expect(result.total).toBe(1);
+    expect(result.items[0].title).toBe('Recovered without explicit init');
+  });
+
+  it('migrates legacy server data into the canonical store', async () => {
+    const projectRoot = path.join(tmpDir, 'project');
+    const legacyPath = path.join(projectRoot, 'server', 'data', 'kanban', 'tasks.json');
+    process.env.NERVE_DATA_DIR = path.join(tmpDir, 'nerve-data');
+    process.env.NERVE_PROJECT_ROOT = projectRoot;
+
+    const legacyStore = new KanbanStore(legacyPath);
+    await legacyStore.init();
+    await legacyStore.createTask({ title: 'Recovered from server', createdBy: 'operator' });
+
+    const defaultStore = new KanbanStore();
+    await defaultStore.init();
+
+    const result = await defaultStore.listTasks();
+    expect(result.total).toBe(1);
+    expect(result.items[0].title).toBe('Recovered from server');
+  });
+
+  it('prefers the canonical store when canonical and legacy data both exist', async () => {
+    const projectRoot = path.join(tmpDir, 'project');
+    const canonicalDir = path.join(tmpDir, 'nerve-data', 'kanban');
+    const legacyPath = path.join(projectRoot, 'server-dist', 'data', 'kanban', 'tasks.json');
+    process.env.NERVE_DATA_DIR = path.join(tmpDir, 'nerve-data');
+    process.env.NERVE_PROJECT_ROOT = projectRoot;
+
+    const legacyStore = new KanbanStore(legacyPath);
+    await legacyStore.init();
+    await legacyStore.createTask({ title: 'Legacy task', createdBy: 'operator' });
+
+    const canonicalStore = new KanbanStore(path.join(canonicalDir, 'tasks.json'));
+    await canonicalStore.init();
+    await canonicalStore.createTask({ title: 'Canonical task', createdBy: 'operator' });
+
+    const defaultStore = new KanbanStore();
+    await defaultStore.init();
+
+    const result = await defaultStore.listTasks();
+    expect(result.total).toBe(1);
+    expect(result.items[0].title).toBe('Canonical task');
+  });
+
+  it('prefers the richer legacy candidate over an empty one', async () => {
+    const projectRoot = path.join(tmpDir, 'project');
+    const emptyLegacyPath = path.join(projectRoot, 'server-dist', 'data', 'kanban', 'tasks.json');
+    const richLegacyPath = path.join(projectRoot, 'server', 'data', 'kanban', 'tasks.json');
+    process.env.NERVE_DATA_DIR = path.join(tmpDir, 'nerve-data');
+    process.env.NERVE_PROJECT_ROOT = projectRoot;
+
+    const emptyStore = new KanbanStore(emptyLegacyPath);
+    await emptyStore.init();
+
+    const richStore = new KanbanStore(richLegacyPath);
+    await richStore.init();
+    await richStore.createTask({ title: 'Rich legacy task', createdBy: 'operator' });
+
+    const defaultStore = new KanbanStore();
+    await defaultStore.init();
+
+    const result = await defaultStore.listTasks();
+    expect(result.total).toBe(1);
+    expect(result.items[0].title).toBe('Rich legacy task');
   });
 });

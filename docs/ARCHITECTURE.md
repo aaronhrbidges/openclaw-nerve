@@ -513,11 +513,11 @@ The kanban board provides task management with agent execution, drag-and-drop re
 ### Store Design
 
 ```
-server/data/kanban/tasks.json   -- single JSON file (tasks + proposals + config)
-server/data/kanban/audit.log    -- append-only audit log (JSONL)
+${NERVE_DATA_DIR:-~/.nerve}/kanban/tasks.json   -- single JSON file (tasks + proposals + config)
+${NERVE_DATA_DIR:-~/.nerve}/kanban/audit.log    -- append-only audit log (JSONL)
 ```
 
-All data lives in one JSON file (`StoreData`). Every mutation acquires an async mutex, reads the file, applies the change, and writes back atomically via temp-file rename. This guarantees consistency under concurrent requests without a database.
+All data lives in one JSON file (`StoreData`). Every mutation acquires an async mutex, reads the file, applies the change, and writes back atomically via temp-file rename. This guarantees consistency under concurrent requests without a database. On first startup, the store migrates legacy data from `server-dist/data/kanban/` or `server/data/kanban/` into the canonical runtime directory if needed.
 
 | File | Purpose |
 |------|---------|

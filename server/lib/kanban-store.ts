@@ -1,13 +1,17 @@
 /**
  * Kanban task store — JSON file persistence with mutex-protected I/O.
  *
- * Data lives at `server/data/kanban/tasks.json`. Every mutating operation
- * acquires the store mutex, reads the file, applies the change, and writes
- * back atomically. CAS version checks prevent stale overwrites.
+ * Runtime data lives under `${NERVE_DATA_DIR:-~/.nerve}/kanban/tasks.json`.
+ * Legacy installs may still have data under `server-dist/data/kanban/` or
+ * `server/data/kanban/`, so the store performs a one-time migration into the
+ * canonical runtime directory on first init. Every mutating operation acquires
+ * the store mutex, reads the file, applies the change, and writes back
+ * atomically. CAS version checks prevent stale overwrites.
  * @module
  */
 
 import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 import crypto from 'node:crypto';
 import { fileURLToPath } from 'node:url';
@@ -278,12 +282,21 @@ export class KanbanStore {
   private readonly filePath: string;
   private readonly auditPath: string;
   private readonly withLock: ReturnType<typeof createMutex>;
+  private readonly legacyCandidatePaths: string[];
 
   constructor(filePath?: string) {
     const __dirname = path.dirname(fileURLToPath(import.meta.url));
-    const dataDir = path.resolve(__dirname, '..', 'data', 'kanban');
+    const projectRoot = process.env.NERVE_PROJECT_ROOT || path.resolve(__dirname, '..', '..');
+    const dataRoot = process.env.NERVE_DATA_DIR || path.join(os.homedir() || process.cwd(), '.nerve');
+    const dataDir = path.join(dataRoot, 'kanban');
     this.filePath = filePath || path.join(dataDir, 'tasks.json');
     this.auditPath = path.join(path.dirname(this.filePath), 'audit.log');
+    this.legacyCandidatePaths = filePath
+      ? []
+      : [
+          path.join(projectRoot, 'server-dist', 'data', 'kanban', 'tasks.json'),
+          path.join(projectRoot, 'server', 'data', 'kanban', 'tasks.json'),
+        ];
     this.withLock = createMutex();
   }
 
@@ -356,6 +369,52 @@ export class KanbanStore {
     return data;
   }
 
+  private async loadLegacyCandidate(filePath: string): Promise<{
+    filePath: string;
+    auditPath: string;
+    data: StoreData;
+    contentScore: number;
+    mtimeMs: number;
+  } | null> {
+    try {
+      const raw = await fs.promises.readFile(filePath, 'utf-8');
+      const parsed = JSON.parse(raw) as StoreData;
+      const data = this.migrate(parsed);
+      const stats = await fs.promises.stat(filePath);
+      return {
+        filePath,
+        auditPath: path.join(path.dirname(filePath), 'audit.log'),
+        data,
+        contentScore: data.tasks.length + data.proposals.length,
+        mtimeMs: stats.mtimeMs,
+      };
+    } catch {
+      return null;
+    }
+  }
+
+  private async migrateLegacyStoreIfNeeded(): Promise<boolean> {
+    if (this.legacyCandidatePaths.length === 0) return false;
+
+    const candidates = (await Promise.all(this.legacyCandidatePaths.map((filePath) => this.loadLegacyCandidate(filePath))))
+      .filter((candidate): candidate is NonNullable<typeof candidate> => candidate !== null)
+      .sort((a, b) => b.contentScore - a.contentScore || b.mtimeMs - a.mtimeMs);
+
+    if (candidates.length === 0) return false;
+
+    const selected = candidates[0];
+    await this.writeRaw(selected.data);
+
+    try {
+      await fs.promises.copyFile(selected.auditPath, this.auditPath);
+    } catch {
+      // audit log migration is best-effort
+    }
+
+    console.log(`[kanban-store] migrated legacy store from ${selected.filePath} to ${this.filePath}`);
+    return true;
+  }
+
   private async audit(entry: AuditEntry): Promise<void> {
     try {
       const dir = path.dirname(this.auditPath);
@@ -374,16 +433,27 @@ export class KanbanStore {
     await this.withLock(async () => {
       try {
         await fs.promises.access(this.filePath);
+        return;
       } catch {
+        // canonical store missing, continue
+      }
+
+      const migrated = await this.migrateLegacyStoreIfNeeded();
+      if (!migrated) {
         await this.writeRaw(emptyStore());
       }
     });
   }
 
+  private async withStore<T>(fn: () => Promise<T>): Promise<T> {
+    await this.init();
+    return this.withLock(fn);
+  }
+
   // ── Tasks: List ──────────────────────────────────────────────────
 
   async listTasks(filters: TaskFilters = {}): Promise<TaskListResult> {
-    return this.withLock(async () => {
+    return this.withStore(async () => {
       const data = await this.readRaw();
       let tasks = data.tasks;
 
@@ -433,7 +503,7 @@ export class KanbanStore {
   // ── Tasks: Get ───────────────────────────────────────────────────
 
   async getTask(id: string): Promise<KanbanTask> {
-    return this.withLock(async () => {
+    return this.withStore(async () => {
       const data = await this.readRaw();
       const task = data.tasks.find((t) => t.id === id);
       if (!task) throw new TaskNotFoundError(id);
@@ -457,7 +527,7 @@ export class KanbanStore {
     dueAt?: number;
     estimateMin?: number;
   }): Promise<KanbanTask> {
-    return this.withLock(async () => {
+    return this.withStore(async () => {
       const data = await this.readRaw();
 
       // Compute columnOrder — append to end of target column
@@ -523,7 +593,7 @@ export class KanbanStore {
     >,
     actor?: string,
   ): Promise<KanbanTask> {
-    return this.withLock(async () => {
+    return this.withStore(async () => {
       const data = await this.readRaw();
       const idx = data.tasks.findIndex((t) => t.id === id);
       if (idx === -1) throw new TaskNotFoundError(id);
@@ -561,7 +631,7 @@ export class KanbanStore {
   // ── Tasks: Delete ────────────────────────────────────────────────
 
   async deleteTask(id: string, actor?: string): Promise<void> {
-    return this.withLock(async () => {
+    return this.withStore(async () => {
       const data = await this.readRaw();
       const idx = data.tasks.findIndex((t) => t.id === id);
       if (idx === -1) throw new TaskNotFoundError(id);
@@ -581,7 +651,7 @@ export class KanbanStore {
     targetIndex: number,
     actor?: string,
   ): Promise<KanbanTask> {
-    return this.withLock(async () => {
+    return this.withStore(async () => {
       const data = await this.readRaw();
       const idx = data.tasks.findIndex((t) => t.id === id);
       if (idx === -1) throw new TaskNotFoundError(id);
@@ -632,14 +702,14 @@ export class KanbanStore {
   // ── Config ───────────────────────────────────────────────────────
 
   async getConfig(): Promise<KanbanBoardConfig> {
-    return this.withLock(async () => {
+    return this.withStore(async () => {
       const data = await this.readRaw();
       return data.config;
     });
   }
 
   async updateConfig(patch: Partial<KanbanBoardConfig>): Promise<KanbanBoardConfig> {
-    return this.withLock(async () => {
+    return this.withStore(async () => {
       const data = await this.readRaw();
       data.config = { ...data.config, ...patch };
       if (patch.columns) data.config.columns = patch.columns;
@@ -657,7 +727,7 @@ export class KanbanStore {
     options?: { model?: string; thinking?: 'off' | 'low' | 'medium' | 'high' },
     actor?: string,
   ): Promise<KanbanTask> {
-    return this.withLock(async () => {
+    return this.withStore(async () => {
       const data = await this.readRaw();
       const idx = data.tasks.findIndex((t) => t.id === id);
       if (idx === -1) throw new TaskNotFoundError(id);
@@ -710,7 +780,7 @@ export class KanbanStore {
   // ── Workflow: Approve ────────────────────────────────────────────
 
   async approveTask(id: string, note?: string, actor?: string): Promise<KanbanTask> {
-    return this.withLock(async () => {
+    return this.withStore(async () => {
       const data = await this.readRaw();
       const idx = data.tasks.findIndex((t) => t.id === id);
       if (idx === -1) throw new TaskNotFoundError(id);
@@ -755,7 +825,7 @@ export class KanbanStore {
   // ── Workflow: Reject ─────────────────────────────────────────────
 
   async rejectTask(id: string, note: string, actor?: string): Promise<KanbanTask> {
-    return this.withLock(async () => {
+    return this.withStore(async () => {
       const data = await this.readRaw();
       const idx = data.tasks.findIndex((t) => t.id === id);
       if (idx === -1) throw new TaskNotFoundError(id);
@@ -803,7 +873,7 @@ export class KanbanStore {
   // ── Workflow: Abort ──────────────────────────────────────────────
 
   async abortTask(id: string, note?: string, actor?: string): Promise<KanbanTask> {
-    return this.withLock(async () => {
+    return this.withStore(async () => {
       const data = await this.readRaw();
       const idx = data.tasks.findIndex((t) => t.id === id);
       if (idx === -1) throw new TaskNotFoundError(id);
@@ -858,7 +928,7 @@ export class KanbanStore {
     result?: string,
     error?: string,
   ): Promise<KanbanTask> {
-    return this.withLock(async () => {
+    return this.withStore(async () => {
       const data = await this.readRaw();
       const idx = data.tasks.findIndex((t) => t.id === taskId);
       if (idx === -1) throw new TaskNotFoundError(taskId);
@@ -919,7 +989,7 @@ export class KanbanStore {
   // ── Stale run reconciliation ─────────────────────────────────────
 
   async reconcileStaleRuns(maxAgeMs: number): Promise<KanbanTask[]> {
-    return this.withLock(async () => {
+    return this.withStore(async () => {
       const data = await this.readRaw();
       const now = Date.now();
       const reconciled: KanbanTask[] = [];
@@ -971,7 +1041,7 @@ export class KanbanStore {
     sourceSessionKey?: string;
     proposedBy: TaskActor;
   }): Promise<KanbanProposal> {
-    return this.withLock(async () => {
+    return this.withStore(async () => {
       const data = await this.readRaw();
       const now = Date.now();
 
@@ -1014,7 +1084,7 @@ export class KanbanStore {
     id: string,
     actor: TaskActor = 'operator',
   ): Promise<{ proposal: KanbanProposal; task: KanbanTask }> {
-    return this.withLock(async () => {
+    return this.withStore(async () => {
       const data = await this.readRaw();
       const proposal = data.proposals.find((p) => p.id === id);
       if (!proposal) throw new ProposalNotFoundError(id);
@@ -1047,7 +1117,7 @@ export class KanbanStore {
     reason?: string,
     actor: TaskActor = 'operator',
   ): Promise<KanbanProposal> {
-    return this.withLock(async () => {
+    return this.withStore(async () => {
       const data = await this.readRaw();
       const proposal = data.proposals.find((p) => p.id === id);
       if (!proposal) throw new ProposalNotFoundError(id);
@@ -1067,7 +1137,7 @@ export class KanbanStore {
   }
 
   async listProposals(statusFilter?: ProposalStatus): Promise<KanbanProposal[]> {
-    return this.withLock(async () => {
+    return this.withStore(async () => {
       const data = await this.readRaw();
       let proposals = data.proposals;
       if (statusFilter) {

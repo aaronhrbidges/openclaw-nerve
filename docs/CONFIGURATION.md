@@ -307,7 +307,7 @@ The updater stores state in `~/.nerve/updater/`. These are not configurable via 
 
 ## Kanban
 
-Kanban board configuration is stored in the data file (`server/data/kanban/tasks.json`), not in `.env`. Manage it via the REST API:
+Kanban board configuration is stored in the runtime data file (`${NERVE_DATA_DIR:-~/.nerve}/kanban/tasks.json`), not in `.env`. Manage it via the REST API:
 
 ```bash
 # Read current config
