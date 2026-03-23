@@ -254,6 +254,7 @@ export const InputBar = forwardRef<InputBarHandle, InputBarProps>(function Input
   }, [wakeWordEnabled, toggleWakeWord, onWakeWordState]);
 
   const handleSend = () => {
+    if (isGenerating) return;
     if (!hasActiveSession) {
       indicateMissingSession();
       return;
@@ -486,6 +487,8 @@ export const InputBar = forwardRef<InputBarHandle, InputBarProps>(function Input
           )
           : voiceState === 'transcribing'
           ? 'Transcribing…'
+          : isGenerating
+          ? 'Abort current response first'
           : (
             <>
               <span className="sm:hidden">Enter to send · Shift+Enter newline · Double Shift voice</span>
