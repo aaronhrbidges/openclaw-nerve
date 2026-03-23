@@ -6,18 +6,23 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [1.5.0] - 2026-03-23
+
 ### Highlights
 
 **Workspace context now follows the owning top-level agent**. File browser state, Memory, Config, and Skills now switch with the selected top-level agent instead of leaking across agents, and dirty editor tabs now block cross-agent switches with an explicit save / discard / cancel choice (PR #123).
 
 **Agent runtime flows got tighter**. Subagents can now choose whether they stay visible after one-shot runs, subagent deletion is more reliable, and the model catalog waits longer on cold starts so configured Codex and other models are more likely to appear in the spawn dialog (PR #119, PR #120, PR #124).
 
+**Voice and readability both moved forward**. Xiaomi MiMo joins as a first-class TTS provider, the new global font size control now reaches more of the UI, and small-screen inputs keep a fixed 16px size to avoid mobile auto-zoom regressions (PR #128, PR #129, PR #130).
+
 **Installer and mobile edge cases got another hardening pass**. Tailscale setup now supports distinct IP and Serve flows, wake word is disabled on mobile web, and the right sidebar can collapse narrower on smaller screens (PR #116, PR #118, PR #122).
 
 ### Added
 - Tailscale IP and Tailscale Serve setup flows in the installer, with matching installer-step documentation (PR #116)
 - An **After run** selector for one-shot subagents, with **Keep** and **Delete** cleanup options (PR #120)
-- **Font size setting** in Appearance settings — adjustable from 10px to 24px via dropdown, stored in `localStorage`, applied instantly via CSS custom property. All hardcoded `px` font sizes converted to `rem` units so the entire UI scales proportionally (PR #128)
+- **Font size setting** in Appearance settings, adjustable from 10px to 24px via dropdown, stored in `localStorage`, and applied instantly via a CSS custom property (PR #128)
+- **Xiaomi MiMo** as a first-class TTS provider, including API key plumbing, server-side synthesis support, and Audio settings controls for model, voice, and style (PR #129)
 
 ### Changed
 - Workspace scope is now derived from the owning top-level agent, including when viewing subagent sessions (PR #123)
@@ -26,11 +31,20 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Model catalog fetches now allow a longer cold-start timeout before giving up, so configured Codex and other models appear more reliably in the spawn dialog (PR #124)
 - Mobile web now disables wake word and points users to manual mic activation instead (PR #118)
 - Right sidebar resizing now allows a narrower minimum width (PR #122)
+- Cron list and dialog typography now fully follows the global font size system, with the remaining fixed pixel sizes converted to `rem` units (PR #130)
 
 ### Fixed
 - Subagent session deletion no longer fails on the Nerve side when the gateway closes a proxied WebSocket normally during delete flows (PR #119)
 - Agent-scoped workspace switching no longer leaks same-path editor state, save toasts, watcher refreshes, or async file reads across top-level agents (PR #123)
 - Tailscale origin handling is more robust during setup and follow-up gateway patching (PR #116)
+- Small-screen text inputs now stay at 16px so mobile browsers do not auto-zoom the composer and settings controls after font size changes (PR #130)
+- Older top-level agent chats stay visible in the sidebar instead of disappearing once they fall outside the recent-activity query window (PR #134)
+- Kanban runtime data now lives under `${NERVE_DATA_DIR:-~/.nerve}/kanban`, and legacy installs automatically migrate data from old `server-dist/data/kanban` or `server/data/kanban` locations on first run (PR #135)
+
+### Documentation
+- Added a dedicated Tailscale guide for existing installs, linked from the docs index and configuration docs (PR #117)
+- Refreshed the API, architecture, configuration, troubleshooting, and changelog docs to match agent-scoped workspace behavior and newer gateway and file APIs (PR #126)
+- Rewrote the README around current positioning, capabilities, install flow, and embedded demo video, with follow-up formatting and video asset fixes (PR #136)
 
 ---
 
