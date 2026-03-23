@@ -53,6 +53,7 @@ export interface TaskFeedback {
 
 export interface TaskRunLink {
   sessionKey: string;
+  childSessionKey?: string;
   sessionId?: string;
   runId?: string;
   startedAt: number;
@@ -360,11 +361,21 @@ export class KanbanStore {
     if (data.config.quickViewLimit === undefined) {
       data.config.quickViewLimit = DEFAULT_CONFIG.quickViewLimit;
     }
-    data.tasks = data.tasks.map((task) => ({
-      ...task,
-      status: normalizeTaskStatus(task.status),
-      priority: normalizeTaskPriority(task.priority),
-    }));
+    data.tasks = data.tasks.map((task) => {
+      const childSessionKey = task.run?.childSessionKey ?? task.run?.sessionId;
+      return {
+        ...task,
+        status: normalizeTaskStatus(task.status),
+        priority: normalizeTaskPriority(task.priority),
+        run: task.run
+          ? {
+              ...task.run,
+              childSessionKey,
+              sessionId: task.run.sessionId ?? childSessionKey,
+            }
+          : task.run,
+      };
+    });
     data.meta.schemaVersion = CURRENT_SCHEMA_VERSION;
     return data;
   }
@@ -773,6 +784,46 @@ export class KanbanStore {
       data.tasks[idx] = task;
       await this.writeRaw(data);
       await this.audit({ ts: now, action: 'execute', taskId: id, actor });
+      return task;
+    });
+  }
+
+
+  async attachRunIdentifiers(
+    taskId: string,
+    sessionKey: string,
+    identifiers: { childSessionKey?: string; runId?: string },
+  ): Promise<KanbanTask | null> {
+    return this.withStore(async () => {
+      const data = await this.readRaw();
+      const idx = data.tasks.findIndex((t) => t.id === taskId);
+      if (idx === -1) throw new TaskNotFoundError(taskId);
+
+      const task = data.tasks[idx];
+      if (!task.run || task.run.status !== 'running' || task.run.sessionKey !== sessionKey) {
+        return null;
+      }
+
+      const nextChildSessionKey = identifiers.childSessionKey ?? task.run.childSessionKey ?? task.run.sessionId;
+      const nextRunId = identifiers.runId ?? task.run.runId;
+      const nextSessionId = task.run.sessionId ?? nextChildSessionKey;
+
+      if (
+        nextChildSessionKey === task.run.childSessionKey
+        && nextRunId === task.run.runId
+        && nextSessionId === task.run.sessionId
+      ) {
+        return task;
+      }
+
+      task.run = {
+        ...task.run,
+        childSessionKey: nextChildSessionKey,
+        sessionId: nextSessionId,
+        runId: nextRunId,
+      };
+      data.tasks[idx] = task;
+      await this.writeRaw(data);
       return task;
     });
   }

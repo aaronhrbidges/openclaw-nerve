@@ -34,7 +34,7 @@ async function buildApp(options: { invokeGatewayToolMock?: GatewayToolMock } = {
   }));
 
   const invokeGatewayToolMock = options.invokeGatewayToolMock
-    ?? (vi.fn(() => Promise.resolve({ childSessionKey: 'test-session' })) as GatewayToolMock);
+    ?? (vi.fn(() => Promise.resolve({})) as GatewayToolMock);
 
   // Mock gateway client so fire-and-forget spawn doesn't interfere with test cleanup
   vi.doMock('../lib/gateway-client.js', () => ({
@@ -1340,6 +1340,63 @@ describe('POST /api/kanban/tasks/:id/complete — run key integrity', () => {
     const proposalsRes = await app.request('/api/kanban/proposals');
     const proposals = await proposalsRes.json() as { proposals: Array<{ payload: Record<string, unknown> }> };
     expect(proposals.proposals.find((proposal) => proposal.payload.title === 'proposal from truncated label')).toBeDefined();
+  });
+
+  it('persists spawned stable identifiers and still completes when only runId matches', async () => {
+    const childSessionKey = 'agent:main:subagent:stable-child';
+    const runId = 'stable-run-42';
+    const invokeGatewayToolMock = vi.fn(async (tool: string) => {
+      if (tool === 'sessions_spawn') {
+        return {
+          details: {
+            childSessionKey,
+            runId,
+          },
+        };
+      }
+      if (tool === 'subagents') {
+        return {
+          active: [],
+          recent: [{ label: 'totally-different-label', status: 'done', runId }],
+        };
+      }
+      if (tool === 'sessions_history') {
+        return {
+          messages: [
+            {
+              role: 'assistant',
+              content: 'Done via runId',
+            },
+          ],
+        };
+      }
+      return {};
+    });
+
+    const app = await buildApp({ invokeGatewayToolMock });
+    const task = await createTask(app, { status: 'todo' });
+
+    const execRes = await app.request(`/api/kanban/tasks/${task.id}/execute`, json({}));
+    expect(execRes.status).toBe(200);
+    const running = await execRes.json() as KanbanTask;
+
+    await new Promise((resolve) => setTimeout(resolve, 3_200));
+
+    expect(invokeGatewayToolMock).toHaveBeenCalledWith('sessions_history', {
+      sessionKey: childSessionKey,
+      limit: 3,
+    });
+
+    const tasksRes = await app.request('/api/kanban/tasks');
+    const tasks = await tasksRes.json() as { items: KanbanTask[] };
+    const completed = tasks.items.find((item) => item.id === task.id);
+    expect(completed?.status).toBe('review');
+    expect(completed?.run?.status).toBe('done');
+    expect(completed?.run?.sessionKey).toBe(running.run?.sessionKey);
+    expect(completed?.run?.childSessionKey).toBe(childSessionKey);
+    expect(completed?.run?.sessionId).toBe(childSessionKey);
+    expect(completed?.run?.runId).toBe(runId);
+    expect(completed?.result).toContain('Done via runId');
   });
 
   it('ignores late stale poller completion from run 1 after run 2 is active', async () => {

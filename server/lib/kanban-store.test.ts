@@ -558,6 +558,53 @@ describe('executeTask', () => {
 
 // ── Approve ──────────────────────────────────────────────────────────
 
+describe('attachRunIdentifiers', () => {
+  it('persists stable spawned identifiers without bumping the task version', async () => {
+    const task = await createSampleTask({ status: 'todo' });
+    const executed = await store.executeTask(task.id);
+
+    const linked = await store.attachRunIdentifiers(executed.id, executed.run!.sessionKey, {
+      childSessionKey: 'agent:main:subagent:stable-child',
+      runId: 'stable-run-123',
+    });
+
+    expect(linked).not.toBeNull();
+    expect(linked!.run?.sessionKey).toBe(executed.run!.sessionKey);
+    expect(linked!.run?.childSessionKey).toBe('agent:main:subagent:stable-child');
+    expect(linked!.run?.sessionId).toBe('agent:main:subagent:stable-child');
+    expect(linked!.run?.runId).toBe('stable-run-123');
+    expect(linked!.version).toBe(executed.version);
+
+    const fresh = await store.getTask(task.id);
+    expect(fresh.run?.childSessionKey).toBe('agent:main:subagent:stable-child');
+    expect(fresh.run?.sessionId).toBe('agent:main:subagent:stable-child');
+    expect(fresh.run?.runId).toBe('stable-run-123');
+    expect(fresh.version).toBe(executed.version);
+  });
+
+  it('ignores stale spawned identifiers after a rerun replaces the active run', async () => {
+    const task = await createSampleTask({ status: 'todo' });
+    const run1 = await store.executeTask(task.id);
+    await store.abortTask(run1.id, 'rerun');
+    const rerunnable = await store.getTask(task.id);
+    const run2 = await store.executeTask(rerunnable.id);
+
+    const linked = await store.attachRunIdentifiers(run2.id, run1.run!.sessionKey, {
+      childSessionKey: 'agent:main:subagent:stale-child',
+      runId: 'stale-run-123',
+    });
+
+    expect(linked).toBeNull();
+
+    const fresh = await store.getTask(task.id);
+    expect(fresh.run?.sessionKey).toBe(run2.run!.sessionKey);
+    expect(fresh.run?.childSessionKey).toBeUndefined();
+    expect(fresh.run?.runId).toBeUndefined();
+  });
+});
+
+// ── Approve ──────────────────────────────────────────────────────────
+
 describe('approveTask', () => {
   it('moves task from review to done', async () => {
     const task = await createSampleTask({ status: 'todo' });

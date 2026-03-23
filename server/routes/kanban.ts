@@ -72,7 +72,7 @@ export function cleanupKanbanPollers(): void {
 
 interface KanbanRunIdentity {
   correlationKey: string;
-  gatewaySessionKey?: string;
+  childSessionKey?: string;
   runId?: string;
 }
 
@@ -80,9 +80,11 @@ function findGatewayRunMatch(
   sessions: Array<Record<string, unknown>>,
   identity: KanbanRunIdentity,
 ): Record<string, unknown> | undefined {
-  if (identity.gatewaySessionKey) {
-    const bySessionKey = sessions.find((session) => String(session.sessionKey ?? '') === identity.gatewaySessionKey);
-    if (bySessionKey) return bySessionKey;
+  if (identity.childSessionKey) {
+    const byChildSessionKey = sessions.find((session) => (
+      String(session.childSessionKey ?? session.sessionKey ?? session.sessionId ?? '') === identity.childSessionKey
+    ));
+    if (byChildSessionKey) return byChildSessionKey;
   }
 
   if (identity.runId) {
@@ -90,11 +92,7 @@ function findGatewayRunMatch(
     if (byRunId) return byRunId;
   }
 
-  if (!identity.gatewaySessionKey && !identity.runId) {
-    return sessions.find((session) => String(session.label ?? '') === identity.correlationKey);
-  }
-
-  return undefined;
+  return sessions.find((session) => String(session.label ?? '') === identity.correlationKey);
 }
 
 /** Poll gateway subagents for a kanban run until it finishes, then complete the run. */
@@ -137,19 +135,23 @@ function pollSessionCompletion(
       }
 
       const status = match.status as string;
-      const gatewaySessionKey = typeof match.sessionKey === 'string'
-        ? match.sessionKey
-        : identity.gatewaySessionKey;
+      const childSessionKey = typeof match.childSessionKey === 'string'
+        ? match.childSessionKey
+        : typeof match.sessionKey === 'string'
+          ? match.sessionKey
+          : typeof match.sessionId === 'string'
+            ? match.sessionId
+            : identity.childSessionKey;
 
       if (status === 'done') {
         // Fetch session history to get the result text
         let resultText = 'Completed (no result text)';
-        if (!gatewaySessionKey) {
-          console.warn(`[kanban] Run ${identity.correlationKey} completed without a gateway session key`);
+        if (!childSessionKey) {
+          console.warn(`[kanban] Run ${identity.correlationKey} completed without a child session key`);
         } else {
           try {
             const histRaw = await invokeGatewayTool('sessions_history', {
-              sessionKey: gatewaySessionKey,
+              sessionKey: childSessionKey,
               limit: 3,
             });
             const histParsed = parseGatewayResponse(histRaw);
@@ -236,6 +238,7 @@ const feedbackSchema = z.object({
 
 const runLinkSchema = z.object({
   sessionKey: z.string(),
+  childSessionKey: z.string().optional(),
   sessionId: z.string().optional(),
   runId: z.string().optional(),
   startedAt: z.number(),
@@ -767,18 +770,26 @@ app.post('/api/kanban/tasks/:id/execute', rateLimitGeneral, async (c) => {
     if (thinking) spawnArgs.thinking = thinking;
 
     invokeGatewayTool('sessions_spawn', spawnArgs)
-      .then((spawnRaw) => {
+      .then(async (spawnRaw) => {
         const spawn = parseGatewayResponse(spawnRaw);
-        const gatewaySessionKey = typeof spawn.childSessionKey === 'string' ? spawn.childSessionKey : undefined;
+        const childSessionKey = typeof spawn.childSessionKey === 'string' ? spawn.childSessionKey : undefined;
         const runId = typeof spawn.runId === 'string' ? spawn.runId : undefined;
 
-        // Poll for session completion in the background, using the stable spawned
-        // session key when the gateway provides one. The human-readable run key
-        // stays in the kanban store for correlation and stale-run protection.
+        const linkedTask = await store.attachRunIdentifiers(id, runSessionKey, {
+          childSessionKey,
+          runId,
+        });
+        if (!linkedTask) {
+          console.warn(`[kanban] Spawned run metadata arrived after task ${id} moved on from run ${runSessionKey}`);
+          return;
+        }
+
+        // Poll for session completion in the background, preferring the stable
+        // spawned identifiers before falling back to the human-readable label.
         pollSessionCompletion(store, id, {
           correlationKey: runSessionKey,
-          gatewaySessionKey,
-          runId,
+          childSessionKey: linkedTask.run?.childSessionKey ?? childSessionKey,
+          runId: linkedTask.run?.runId ?? runId,
         });
       })
       .catch((err) => {
