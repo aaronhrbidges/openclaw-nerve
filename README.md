@@ -79,7 +79,7 @@ Charts, diffs, previews, syntax-highlighted code, structured tool rendering, and
 | **Workspace** | Per-agent file browser, tabbed editor, memory editing, config editing, skills browser |
 | **Operations** | Session tree, subagents, cron scheduling, kanban task board, review flow, proposal inbox, model overrides |
 | **Observability** | Token usage, cost tracking, context meter, agent logs, event logs |
-| **Polish** | Command palette, responsive UI, 14 themes, hot-reloadable settings, updater with rollback |
+| **Polish** | Command palette, responsive UI, 14 themes, font family and 10px to 24px font size controls, mobile-safe input sizing, hot-reloadable settings, updater with rollback |
 ## Get started
 
 ### One command

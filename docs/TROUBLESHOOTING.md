@@ -256,8 +256,9 @@ After approval, reconnect from the browser (refresh the page or click reconnect)
 1. **Sound enabled?** Check Settings → Audio → Sound toggle is on
 2. **TTS provider configured?** Check Settings → Audio → TTS Provider
 3. **API key present?**
-   - OpenAI: requires `OPENAI_API_KEY` env var
-   - Replicate: requires `REPLICATE_API_TOKEN` env var
+   - OpenAI: requires `OPENAI_API_KEY`
+   - Replicate: requires `REPLICATE_API_TOKEN`
+   - Xiaomi MiMo: requires `MIMO_API_KEY`
    - Edge: no key needed (free)
 4. **Server-side check:**
    ```bash
@@ -265,9 +266,9 @@ After approval, reconnect from the browser (refresh the page or click reconnect)
      -H "Content-Type: application/json" \
      -d '{"text": "hello", "provider": "edge"}'
    ```
-   Should return audio/mpeg binary.
+   Should return playable audio binary.
 
-**Provider auto-fallback:** If no explicit provider is selected, the server tries: OpenAI (if key) → Replicate (if key) → Edge (always available).
+**Provider auto-fallback:** If no explicit provider is selected, the server tries: OpenAI (if key) → Replicate (if key) → Edge (always available). Xiaomi MiMo is explicit-only and is used only when you select the Xiaomi provider.
 
 ### TTS plays old/wrong responses
 
@@ -407,14 +408,20 @@ MEMORY_PATH=/path/to/.openclaw/workspace/MEMORY.md
 
 ### Sessions don't appear in sidebar
 
-**Symptom:** Session list is empty or only shows one recent root session.
+**Symptom:** Session list is empty, obviously incomplete, or older top-level chats are missing.
 
-**Cause:** Sessions are fetched via gateway RPC `sessions.list` with `activeMinutes: 120` filter.
+**Expected behavior in 1.5.0+:** Older top-level chats should remain visible in the sidebar. They are no longer supposed to disappear just because they fell outside a recent-activity window.
+
+**Likely causes:**
+- Gateway connectivity or auth problems prevented the session list from refreshing
+- The browser is showing stale client state after a reconnect or upgrade
+- A session fetch failed and the sidebar did not recover yet
 
 **Fix:**
-- Sessions inactive for >2 hours won't appear — this is by design
-- Check gateway connectivity (sessions come from the gateway, not local state)
-- Force refresh: click refresh button or Cmd+K → "Refresh Sessions"
+- Check gateway connectivity first, sessions come from the gateway, not local browser state
+- Force refresh with the refresh button or Cmd+K → "Refresh Sessions"
+- Reload the page after upgrades or reconnect storms
+- If the problem persists, inspect browser console and server logs for session-list or WebSocket errors
 
 ### Sub-agent spawn times out
 

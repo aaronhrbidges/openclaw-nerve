@@ -5,7 +5,7 @@ Use this folder as the docs hub for Nerve.
 ## Core Docs
 
 - [Architecture](./ARCHITECTURE.md)
-- [Configuration](./CONFIGURATION.md)
+- [Configuration](./CONFIGURATION.md), setup wizard, auth, access modes, TTS providers, and appearance settings
 - [API](./API.md)
 - [Security](./SECURITY.md)
 - [Troubleshooting](./TROUBLESHOOTING.md)

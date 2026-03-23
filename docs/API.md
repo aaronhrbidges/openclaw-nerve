@@ -270,7 +270,7 @@ data: {"event":"memory.changed","data":{"source":"api","action":"create","sectio
 
 ### `POST /api/tts`
 
-Synthesizes speech from text. Returns raw `audio/mpeg` binary.
+Synthesizes speech from text. Returns raw audio binary.
 
 **Rate Limit:** TTS (10/min)  
 **Body Size Limit:** 64 KB
@@ -289,17 +289,19 @@ Synthesizes speech from text. Returns raw `audio/mpeg` binary.
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
 | `text` | `string` | Yes | Text to synthesize (1–5000 chars, non-empty after trim) |
-| `provider` | `"openai" \| "replicate" \| "edge" \| "qwen"` | No | TTS provider. `"qwen"` is an alias for `"replicate"` + model `"qwen-tts"` |
+| `provider` | `"openai" \| "replicate" \| "edge" \| "qwen" \| "xiaomi"` | No | TTS provider. `"qwen"` is a legacy alias for `"replicate"` + model `"qwen-tts"` |
 | `voice` | `string` | No | Provider-specific voice name |
 | `model` | `string` | No | Provider-specific model ID |
 
 **Provider Selection (when `provider` is omitted):**
 
-1. OpenAI — if `OPENAI_API_KEY` is set
-2. Replicate — if `REPLICATE_API_TOKEN` is set
-3. Edge TTS — always available (free, no API key)
+1. OpenAI, if `OPENAI_API_KEY` is set
+2. Replicate, if `REPLICATE_API_TOKEN` is set
+3. Edge TTS, always available (free, no API key)
 
-**Response:** `audio/mpeg` binary (200)
+Xiaomi MiMo is available when `provider: "xiaomi"` is requested and `MIMO_API_KEY` is configured. It is not part of the automatic fallback chain.
+
+**Response:** `audio/mpeg` binary for OpenAI, Replicate, and Edge, or `audio/wav` for Xiaomi MiMo (200)
 
 **Errors:**
 
@@ -319,9 +321,20 @@ Returns the current TTS voice configuration.
 
 ```json
 {
-  "qwen": { "mode": "preset", "speaker": "Chelsie" },
-  "openai": { "model": "tts-1", "voice": "alloy" },
-  "edge": { "voice": "en-US-AriaNeural" }
+  "qwen": {
+    "mode": "voice_design",
+    "language": "English",
+    "speaker": "Serena",
+    "voiceDescription": "",
+    "styleInstruction": ""
+  },
+  "openai": {
+    "model": "gpt-4o-mini-tts",
+    "voice": "nova",
+    "instructions": "Speak naturally and conversationally, like a real person. Warm, friendly tone with a slight British accent. Keep it casual and relaxed, not robotic or overly formal."
+  },
+  "edge": { "voice": "en-US-AriaNeural" },
+  "xiaomi": { "model": "mimo-v2-tts", "voice": "mimo_default", "style": "" }
 }
 ```
 
@@ -334,7 +347,8 @@ Partially updates the TTS voice configuration. Only known keys are accepted.
 ```json
 {
   "openai": { "voice": "nova", "instructions": "Speak cheerfully" },
-  "edge": { "voice": "en-GB-SoniaNeural" }
+  "edge": { "voice": "en-GB-SoniaNeural" },
+  "xiaomi": { "voice": "default_en", "style": "Happy" }
 }
 ```
 
@@ -345,8 +359,51 @@ Partially updates the TTS voice configuration. Only known keys are accepted.
 | `qwen` | `mode`, `language`, `speaker`, `voiceDescription`, `styleInstruction` |
 | `openai` | `model`, `voice`, `instructions` |
 | `edge` | `voice` |
+| `xiaomi` | `model`, `voice`, `style` |
 
 All values must be strings, max 2000 characters each.
+
+### `GET /api/keys`
+
+Returns whether optional provider keys are configured. Key values are never returned.
+
+**Response:**
+
+```json
+{
+  "openaiKeySet": true,
+  "replicateKeySet": false,
+  "xiaomiKeySet": true
+}
+```
+
+### `PUT /api/keys`
+
+Writes optional provider keys to `.env` and hot-reloads the in-memory config.
+
+**Request Body (partial update):**
+
+```json
+{
+  "openaiKey": "sk-...",
+  "replicateToken": "r8_...",
+  "mimoApiKey": "sk-mimo-..."
+}
+```
+
+Any subset of fields may be provided. Sending an empty string clears that key.
+
+**Response:**
+
+```json
+{
+  "ok": true,
+  "message": "OPENAI_API_KEY saved, MIMO_API_KEY saved",
+  "openaiKeySet": true,
+  "replicateKeySet": false,
+  "xiaomiKeySet": true
+}
+```
 
 ---
 

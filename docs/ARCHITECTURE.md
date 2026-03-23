@@ -179,8 +179,8 @@ Text-to-speech integration.
 
 | File | Purpose |
 |------|---------|
-| `useTTS.ts` | Core TTS hook — speaks text via server `/api/tts` endpoint. Supports OpenAI, Replicate, Edge (default) providers |
-| `useTTSConfig.ts` | Server-side TTS voice configuration management |
+| `useTTS.ts` | Core TTS hook, speaks text via server `/api/tts` endpoint. Supports OpenAI, Replicate, Edge (default), and Xiaomi MiMo providers |
+| `useTTSConfig.ts` | Server-side TTS voice configuration management for Qwen, OpenAI, Edge, and Xiaomi MiMo settings |
 
 #### `features/voice/`
 Voice input and audio feedback.
