@@ -925,6 +925,7 @@ export class KanbanStore {
 
   async completeRun(
     taskId: string,
+    sessionKey: string,
     result?: string,
     error?: string,
   ): Promise<KanbanTask> {
@@ -940,6 +941,14 @@ export class KanbanStore {
           task.status,
           error ? 'todo' : 'review',
           `No active run to complete on task "${taskId}"`,
+        );
+      }
+
+      if (task.run.sessionKey !== sessionKey) {
+        throw new InvalidTransitionError(
+          task.status,
+          error ? 'todo' : 'review',
+          `Run key mismatch for task "${taskId}": active run is "${task.run.sessionKey}", got "${sessionKey}"`,
         );
       }
 
@@ -980,7 +989,7 @@ export class KanbanStore {
         ts: now,
         action: 'complete_run',
         taskId,
-        detail: error ? `error: ${error}` : 'success',
+        detail: error ? `session=${sessionKey},error: ${error}` : `session=${sessionKey},success`,
       });
       return task;
     });

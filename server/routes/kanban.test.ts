@@ -8,25 +8,37 @@ import type { KanbanTask } from '../lib/kanban-store.js';
 
 let tmpDir: string;
 
+type GatewayToolMock = (tool: string, args?: Record<string, unknown>) => Promise<unknown>;
+
 beforeEach(async () => {
   vi.resetModules();
   tmpDir = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'kanban-route-test-'));
 });
 
 afterEach(async () => {
+  try {
+    const mod = await import('./kanban.js');
+    mod.cleanupKanbanPollers();
+  } catch {
+    // route module may not have been loaded in this test
+  }
+  vi.useRealTimers();
   vi.restoreAllMocks();
   await fs.promises.rm(tmpDir, { recursive: true, force: true });
 });
 
-async function buildApp(): Promise<Hono> {
+async function buildApp(options: { invokeGatewayToolMock?: GatewayToolMock } = {}): Promise<Hono> {
   // Mock rate-limit to be a no-op for tests
   vi.doMock('../middleware/rate-limit.js', () => ({
     rateLimitGeneral: vi.fn((_c: unknown, next: () => Promise<void>) => next()),
   }));
 
+  const invokeGatewayToolMock = options.invokeGatewayToolMock
+    ?? (vi.fn(() => Promise.resolve({ childSessionKey: 'test-session' })) as GatewayToolMock);
+
   // Mock gateway client so fire-and-forget spawn doesn't interfere with test cleanup
   vi.doMock('../lib/gateway-client.js', () => ({
-    invokeGatewayTool: vi.fn(() => Promise.resolve({ childSessionKey: 'test-session' })),
+    invokeGatewayTool: invokeGatewayToolMock,
   }));
 
   // Create store from the re-imported module so instanceof checks work
@@ -1106,7 +1118,10 @@ describe('POST /api/kanban/tasks/:id/complete — marker parsing', () => {
     const task = await setupRunningTask(app);
 
     const resultText = 'Task done.\n[kanban:create]{"title":"Follow-up task","priority":"high"}[/kanban:create]\nEnd.';
-    const res = await app.request(`/api/kanban/tasks/${task.id}/complete`, json({ result: resultText }));
+    const res = await app.request(`/api/kanban/tasks/${task.id}/complete`, json({
+      sessionKey: task.run!.sessionKey,
+      result: resultText,
+    }));
     expect(res.status).toBe(200);
 
     // Verify proposal was created
@@ -1123,7 +1138,10 @@ describe('POST /api/kanban/tasks/:id/complete — marker parsing', () => {
     const task = await setupRunningTask(app);
 
     const resultText = 'Task done.\n[kanban:create]{"title":"Follow-up"}[/kanban:create]\nEnd.';
-    const res = await app.request(`/api/kanban/tasks/${task.id}/complete`, json({ result: resultText }));
+    const res = await app.request(`/api/kanban/tasks/${task.id}/complete`, json({
+      sessionKey: task.run!.sessionKey,
+      result: resultText,
+    }));
     expect(res.status).toBe(200);
     const completed = await res.json() as KanbanTask;
     expect(completed.result).not.toContain('[kanban:create]');
@@ -1136,7 +1154,10 @@ describe('POST /api/kanban/tasks/:id/complete — marker parsing', () => {
     const task = await setupRunningTask(app);
 
     const resultText = 'All work completed successfully.';
-    const res = await app.request(`/api/kanban/tasks/${task.id}/complete`, json({ result: resultText }));
+    const res = await app.request(`/api/kanban/tasks/${task.id}/complete`, json({
+      sessionKey: task.run!.sessionKey,
+      result: resultText,
+    }));
     expect(res.status).toBe(200);
     const completed = await res.json() as KanbanTask;
     expect(completed.result).toBe(resultText);
@@ -1151,7 +1172,10 @@ describe('POST /api/kanban/tasks/:id/complete — marker parsing', () => {
     const task = await setupRunningTask(app);
 
     const resultText = 'Done.\n[kanban:create]{bad json}[/kanban:create]\nFinished.';
-    const res = await app.request(`/api/kanban/tasks/${task.id}/complete`, json({ result: resultText }));
+    const res = await app.request(`/api/kanban/tasks/${task.id}/complete`, json({
+      sessionKey: task.run!.sessionKey,
+      result: resultText,
+    }));
     expect(res.status).toBe(200);
     const completed = await res.json() as KanbanTask;
     // Invalid markers are not parsed but still stripped by the regex
@@ -1169,6 +1193,7 @@ describe('POST /api/kanban/tasks/:id/complete — marker parsing', () => {
 
     const resultText = '[kanban:create]{"title":"Should not be created"}[/kanban:create]';
     const res = await app.request(`/api/kanban/tasks/${task.id}/complete`, json({
+      sessionKey: task.run!.sessionKey,
       result: resultText,
       error: 'Task failed',
     }));
@@ -1192,7 +1217,10 @@ describe('POST /api/kanban/tasks/:id/complete — marker parsing', () => {
       'Finished.',
     ].join('\n');
 
-    const res = await app.request(`/api/kanban/tasks/${task.id}/complete`, json({ result: resultText }));
+    const res = await app.request(`/api/kanban/tasks/${task.id}/complete`, json({
+      sessionKey: task.run!.sessionKey,
+      result: resultText,
+    }));
     expect(res.status).toBe(200);
 
     const proposalsRes = await app.request('/api/kanban/proposals');
@@ -1200,6 +1228,120 @@ describe('POST /api/kanban/tasks/:id/complete — marker parsing', () => {
     expect(proposals.proposals).toHaveLength(2);
     expect(proposals.proposals.some(p => p.type === 'create')).toBe(true);
     expect(proposals.proposals.some(p => p.type === 'update')).toBe(true);
+  });
+});
+
+// ── POST /api/kanban/tasks/:id/complete (run key integrity) ─────────
+
+describe('POST /api/kanban/tasks/:id/complete — run key integrity', () => {
+  async function setupRunningTask(app: Hono): Promise<KanbanTask> {
+    const task = await createTask(app, { status: 'todo' });
+    const execRes = await app.request(`/api/kanban/tasks/${task.id}/execute`, json({}));
+    return execRes.json() as Promise<KanbanTask>;
+  }
+
+  it('returns 400 when sessionKey is missing', async () => {
+    const app = await buildApp();
+    const task = await setupRunningTask(app);
+
+    const res = await app.request(`/api/kanban/tasks/${task.id}/complete`, json({
+      result: 'done',
+    }));
+    expect(res.status).toBe(400);
+
+    const proposalsRes = await app.request('/api/kanban/proposals');
+    const proposals = await proposalsRes.json() as { proposals: unknown[] };
+    expect(proposals.proposals).toHaveLength(0);
+
+    const tasksRes = await app.request('/api/kanban/tasks');
+    const tasks = await tasksRes.json() as { items: KanbanTask[] };
+    const latest = tasks.items.find((item) => item.id === task.id);
+    expect(latest?.status).toBe('in-progress');
+    expect(latest?.run?.sessionKey).toBe(task.run?.sessionKey);
+  });
+
+  it('rejects mismatched sessionKey and does not persist proposals', async () => {
+    const app = await buildApp();
+    const task = await setupRunningTask(app);
+
+    const res = await app.request(`/api/kanban/tasks/${task.id}/complete`, json({
+      sessionKey: `${task.run!.sessionKey}-stale`,
+      result: '[kanban:create]{"title":"stale follow-up"}[/kanban:create]',
+    }));
+    expect(res.status).toBe(409);
+
+    const proposalsRes = await app.request('/api/kanban/proposals');
+    const proposals = await proposalsRes.json() as { proposals: unknown[] };
+    expect(proposals.proposals).toHaveLength(0);
+
+    const tasksRes = await app.request('/api/kanban/tasks');
+    const tasks = await tasksRes.json() as { items: KanbanTask[] };
+    const latest = tasks.items.find((item) => item.id === task.id);
+    expect(latest?.status).toBe('in-progress');
+    expect(latest?.run?.status).toBe('running');
+    expect(latest?.run?.sessionKey).toBe(task.run?.sessionKey);
+    expect(latest?.result).toBeUndefined();
+  });
+
+  it('ignores late stale poller completion from run 1 after run 2 is active', async () => {
+    vi.useFakeTimers();
+
+    let run1Label: string | undefined;
+    const invokeGatewayToolMock: GatewayToolMock = vi.fn(async (tool) => {
+      if (tool === 'sessions_spawn') {
+        return { childSessionKey: 'gateway-session' };
+      }
+      if (tool === 'subagents') {
+        return {
+          active: [],
+          recent: run1Label
+            ? [{ label: run1Label, status: 'done', sessionKey: 'gateway-run-1' }]
+            : [],
+        };
+      }
+      if (tool === 'sessions_history') {
+        return {
+          messages: [
+            {
+              role: 'assistant',
+              content: 'Run 1 done\n[kanban:create]{"title":"stale rerun proposal"}[/kanban:create]',
+            },
+          ],
+        };
+      }
+      return {};
+    });
+
+    const app = await buildApp({ invokeGatewayToolMock });
+    const created = await createTask(app, { status: 'todo' });
+
+    const run1Res = await app.request(`/api/kanban/tasks/${created.id}/execute`, json({}));
+    expect(run1Res.status).toBe(200);
+    const run1 = await run1Res.json() as KanbanTask;
+    run1Label = run1.run!.sessionKey;
+
+    const abortRes = await app.request(`/api/kanban/tasks/${created.id}/abort`, json({ note: 'rerun' }));
+    expect(abortRes.status).toBe(200);
+
+    await vi.advanceTimersByTimeAsync(1);
+
+    const run2Res = await app.request(`/api/kanban/tasks/${created.id}/execute`, json({}));
+    expect(run2Res.status).toBe(200);
+    const run2 = await run2Res.json() as KanbanTask;
+
+    await vi.advanceTimersByTimeAsync(3_000);
+
+    const proposalsRes = await app.request('/api/kanban/proposals');
+    const proposals = await proposalsRes.json() as { proposals: Array<{ payload: Record<string, unknown> }> };
+    expect(proposals.proposals.find((proposal) => proposal.payload.title === 'stale rerun proposal')).toBeUndefined();
+
+    const tasksRes = await app.request('/api/kanban/tasks');
+    const tasks = await tasksRes.json() as { items: KanbanTask[] };
+    const latest = tasks.items.find((item) => item.id === created.id);
+    expect(latest?.status).toBe('in-progress');
+    expect(latest?.run?.status).toBe('running');
+    expect(latest?.run?.sessionKey).toBe(run2.run?.sessionKey);
+    expect(latest?.result).toBeUndefined();
   });
 });
 
