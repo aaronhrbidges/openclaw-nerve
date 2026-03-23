@@ -129,6 +129,18 @@ describe('InputBar', () => {
     expect(compressImage).toHaveBeenCalledWith(image);
   });
 
+  it('passes isGenerating through to the voice send guard', () => {
+    const { rerender } = renderInputBar(true);
+
+    let lastCall = useVoiceInputMock.mock.calls.at(-1);
+    expect(lastCall?.[5]).toEqual({ isSendBlocked: true });
+
+    rerender(<InputBar onSend={onSend} isGenerating={false} />);
+
+    lastCall = useVoiceInputMock.mock.calls.at(-1);
+    expect(lastCall?.[5]).toEqual({ isSendBlocked: false });
+  });
+
   it('shows an abort note while generating and removes it when generation stops', () => {
     const { rerender } = renderInputBar(true);
 

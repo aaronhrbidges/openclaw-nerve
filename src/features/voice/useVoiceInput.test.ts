@@ -79,10 +79,37 @@ class MockMediaRecorder {
 
 // Mock MediaStream
 class MockMediaStream {
+  readonly trackStop = vi.fn();
+
   getTracks() {
-    return [{ stop: vi.fn() }];
+    return [{ stop: this.trackStop }];
   }
 }
+
+function createDeferred<T>() {
+  let resolve!: (value: T | PromiseLike<T>) => void;
+  let reject!: (reason?: unknown) => void;
+  const promise = new Promise<T>((res, rej) => {
+    resolve = res;
+    reject = rej;
+  });
+  return { promise, resolve, reject };
+}
+
+function expectSettledVoiceState(state: string) {
+  expect(['idle', 'listening']).toContain(state);
+}
+
+type UseVoiceInputWithGuards = (
+  onTranscription: (text: string) => void,
+  agentName?: string,
+  language?: string,
+  phrasesVersion?: number,
+  sttInputMode?: string,
+  guards?: { isSendBlocked?: boolean },
+) => ReturnType<typeof useVoiceInput>;
+
+const useVoiceInputWithGuards = useVoiceInput as unknown as UseVoiceInputWithGuards;
 
 function hasTranscribeRequest(fetchMock: Mock) {
   return fetchMock.mock.calls.some(([url]) => url === '/api/transcribe');
@@ -99,6 +126,7 @@ describe('useVoiceInput', () => {
 
   beforeEach(() => {
     vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-03-23T12:00:00.000Z'));
     MockMediaRecorder.instances = [];
     mockRecognition = null;
 
@@ -426,6 +454,189 @@ describe('useVoiceInput', () => {
       });
 
       expect(result.current.voiceState).toBe('idle');
+    });
+  });
+
+  describe('Send blocking', () => {
+    it('does not start recording on double left Shift when sending is blocked', async () => {
+      const onTranscription = vi.fn();
+      const { result } = renderHook(() => useVoiceInputWithGuards(onTranscription, 'Agent', 'en', 0, 'hybrid', { isSendBlocked: true }));
+
+      act(() => {
+        window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Shift', location: 1 }));
+        window.dispatchEvent(new KeyboardEvent('keyup', { key: 'Shift', location: 1 }));
+        window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Shift', location: 1 }));
+        window.dispatchEvent(new KeyboardEvent('keyup', { key: 'Shift', location: 1 }));
+      });
+
+      await act(async () => {
+        await Promise.resolve();
+      });
+
+      expect(navigator.mediaDevices.getUserMedia).not.toHaveBeenCalled();
+      expect(audioFeedback.ensureAudioContext).not.toHaveBeenCalled();
+      expect(result.current.interimTranscript).toBe('');
+      expect(result.current.voiceState).toBe('idle');
+      expect(onTranscription).not.toHaveBeenCalled();
+    });
+
+    it('cancels the delayed wake start if sending becomes blocked before the wake timer fires', async () => {
+      const onTranscription = vi.fn();
+      const { result, rerender } = renderHook(
+        ({ blocked }: { blocked: boolean }) => useVoiceInputWithGuards(onTranscription, 'Agent', 'en', 0, 'hybrid', { isSendBlocked: blocked }),
+        { initialProps: { blocked: false } },
+      );
+
+      act(() => {
+        result.current.startWakeWordListener();
+      });
+
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(300);
+      });
+
+      act(() => {
+        mockRecognition?.simulateResult('hey agent');
+      });
+
+      act(() => {
+        rerender({ blocked: true });
+      });
+
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(400);
+      });
+
+      expect(audioFeedback.playWakePing).not.toHaveBeenCalled();
+      expect(navigator.mediaDevices.getUserMedia).not.toHaveBeenCalled();
+      expect(result.current.interimTranscript).toBe('');
+      expectSettledVoiceState(result.current.voiceState);
+      expect(onTranscription).not.toHaveBeenCalled();
+    });
+
+    it('stops a freshly acquired stream if sending becomes blocked while mic access is pending', async () => {
+      const micRequest = createDeferred<MediaStream>();
+      const stream = new MockMediaStream();
+      (navigator.mediaDevices.getUserMedia as Mock).mockReturnValueOnce(micRequest.promise);
+
+      const onTranscription = vi.fn();
+      const { result, rerender } = renderHook(
+        ({ blocked }: { blocked: boolean }) => useVoiceInputWithGuards(onTranscription, 'Agent', 'en', 0, 'hybrid', { isSendBlocked: blocked }),
+        { initialProps: { blocked: false } },
+      );
+
+      await act(async () => {
+        void result.current.startRecording();
+        await Promise.resolve();
+      });
+
+      act(() => {
+        rerender({ blocked: true });
+      });
+
+      await act(async () => {
+        micRequest.resolve(stream as unknown as MediaStream);
+        await Promise.resolve();
+      });
+
+      expect(stream.trackStop).toHaveBeenCalledTimes(1);
+      expect(result.current.interimTranscript).toBe('');
+      expect(result.current.voiceState).toBe('idle');
+      expect(onTranscription).not.toHaveBeenCalled();
+    });
+
+    it('aborts an active recording when sending becomes blocked and clears interim transcript', async () => {
+      const onTranscription = vi.fn();
+      const { result, rerender } = renderHook(
+        ({ blocked }: { blocked: boolean }) => useVoiceInputWithGuards(onTranscription, 'Agent', 'en', 0, 'hybrid', { isSendBlocked: blocked }),
+        { initialProps: { blocked: false } },
+      );
+
+      await act(async () => {
+        await result.current.startRecording();
+        await vi.runAllTimersAsync();
+      });
+
+      act(() => {
+        mockRecognition?.simulateResult('draft transcript');
+      });
+
+      expect(result.current.voiceState).toBe('recording');
+      expect(result.current.interimTranscript).toBe('draft transcript');
+
+      act(() => {
+        rerender({ blocked: true });
+      });
+
+      await act(async () => {
+        await vi.runAllTimersAsync();
+      });
+
+      expect(result.current.interimTranscript).toBe('');
+      expectSettledVoiceState(result.current.voiceState);
+      expect(onTranscription).not.toHaveBeenCalled();
+      expect(hasTranscribeRequest(globalThis.fetch as Mock)).toBe(false);
+      expect(audioFeedback.playSubmitPing).not.toHaveBeenCalled();
+      expect(audioFeedback.playCancelPing).not.toHaveBeenCalled();
+    });
+
+    it('ignores late transcription results if sending becomes blocked after stopAndTranscribe starts', async () => {
+      const transcribeRequest = createDeferred<{ ok: boolean; json: () => Promise<{ text: string }> }>();
+      (globalThis.fetch as Mock).mockImplementation((input: string | URL) => {
+        const url = String(input);
+
+        if (url.startsWith('/api/voice-phrases')) {
+          return Promise.resolve({
+            ok: true,
+            json: () => Promise.resolve({
+              stopPhrases: ['boom', 'done'],
+              cancelPhrases: ['cancel'],
+            }),
+          });
+        }
+
+        if (url === '/api/transcribe') {
+          return transcribeRequest.promise;
+        }
+
+        return Promise.resolve({
+          ok: true,
+          json: () => Promise.resolve({}),
+        });
+      });
+
+      const onTranscription = vi.fn();
+      const { result, rerender } = renderHook(
+        ({ blocked }: { blocked: boolean }) => useVoiceInputWithGuards(onTranscription, 'Agent', 'en', 0, 'local', { isSendBlocked: blocked }),
+        { initialProps: { blocked: false } },
+      );
+
+      await act(async () => {
+        await result.current.startRecording();
+        await vi.runAllTimersAsync();
+      });
+
+      act(() => {
+        result.current.stopAndTranscribe();
+      });
+
+      expect(result.current.voiceState).toBe('transcribing');
+
+      act(() => {
+        rerender({ blocked: true });
+      });
+
+      await act(async () => {
+        transcribeRequest.resolve({
+          ok: true,
+          json: () => Promise.resolve({ text: 'late transcript' }),
+        });
+        await Promise.resolve();
+      });
+
+      expect(onTranscription).not.toHaveBeenCalled();
+      expect(result.current.interimTranscript).toBe('');
+      expectSettledVoiceState(result.current.voiceState);
     });
   });
 

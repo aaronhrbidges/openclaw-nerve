@@ -54,6 +54,10 @@ function getSpeechRecognition(): SpeechRecognitionConstructor | undefined {
 
 export type VoiceState = 'idle' | 'listening' | 'recording' | 'transcribing';
 
+interface VoiceInputGuards {
+  isSendBlocked?: boolean;
+}
+
 function normalizeForMatch(text: string, language: string): string {
   const normalized = (text || '')
     .normalize('NFKC')
@@ -145,6 +149,7 @@ export function useVoiceInput(
   language: string = 'en',
   phrasesVersion: number = 0,
   sttInputMode: STTInputMode = 'hybrid',
+  guards: VoiceInputGuards = {},
 ) {
   const [state, setState] = useState<VoiceState>('idle');
   const stateRef = useRef<VoiceState>('idle');
@@ -159,6 +164,10 @@ export function useVoiceInput(
   onTranscriptionRef.current = onTranscription;
   const sttInputModeRef = useRef(sttInputMode);
   sttInputModeRef.current = sttInputMode;
+  const isSendBlocked = guards.isSendBlocked ?? false;
+  const isSendBlockedRef = useRef(isSendBlocked);
+  isSendBlockedRef.current = isSendBlocked;
+  const voiceRunTokenRef = useRef(0);
 
   // Single persistent recognition instance
   const recognitionRef = useRef<SpeechRecognition | null>(null);
@@ -248,6 +257,42 @@ export function useVoiceInput(
     browserTranscriptRef.current = '';
   }, []);
 
+  const bumpVoiceRunToken = useCallback(() => {
+    voiceRunTokenRef.current += 1;
+    return voiceRunTokenRef.current;
+  }, []);
+
+  const isVoiceRunActive = useCallback((runToken: number) => {
+    return voiceRunTokenRef.current === runToken && !isSendBlockedRef.current;
+  }, []);
+
+  const resumeReadyState = useCallback(() => {
+    if (wakeWordEnabledRef.current) {
+      setVoiceState('listening');
+      ensureRecognitionRef.current('wake');
+    } else {
+      setVoiceState('idle');
+    }
+  }, [setVoiceState]);
+
+  const abortActiveVoiceFlow = useCallback(() => {
+    bumpVoiceRunToken();
+    setInterimTranscript('');
+    resetBrowserTranscript();
+    wakeTriggeredRef.current = false;
+    intentionalStopRef.current = true;
+    try { recognitionRef.current?.abort(); } catch { /* already stopped */ }
+    recognitionRef.current = null;
+
+    if (mediaRecorderRef.current?.state === 'recording') {
+      mediaRecorderRef.current.onstop = null;
+      try { mediaRecorderRef.current.stop(); } catch { /* already stopped */ }
+    }
+
+    stopStream();
+    resumeReadyState();
+  }, [bumpVoiceRunToken, resetBrowserTranscript, resumeReadyState, stopStream]);
+
   // Start or restart the single recognition instance
   const ensureRecognition = useCallback((mode: 'wake' | 'stop') => {
     modeRef.current = mode;
@@ -276,7 +321,7 @@ export function useVoiceInput(
     trackedTimeout(() => {
       // Re-check state — might have changed during the delay
       if (mode === 'wake' && !wakeWordEnabledRef.current) return;
-      if (mode === 'stop' && stateRef.current !== 'recording') return;
+      if (mode === 'stop' && (stateRef.current !== 'recording' || isSendBlockedRef.current)) return;
 
       const recognition = new SpeechRecognition();
       recognition.continuous = true;
@@ -287,6 +332,8 @@ export function useVoiceInput(
 
       recognition.onresult = (event: SpeechRecognitionEvent) => {
         const currentMode = modeRef.current;
+        if (isSendBlockedRef.current) return;
+
         if (currentMode === 'stop') {
           let full = '';
           for (let j = 0; j < event.results.length; j++) {
@@ -319,9 +366,16 @@ export function useVoiceInput(
               intentionalStopRef.current = true;
               try { recognitionRef.current?.abort(); } catch { /* already stopped */ }
               recognitionRef.current = null;
-              playWakePing();
               // Delay mic acquisition until wake chime finishes (~0.35s)
-              trackedTimeout(() => doStartRecording(), 370);
+              trackedTimeout(() => {
+                if (isSendBlockedRef.current) {
+                  wakeTriggeredRef.current = false;
+                  resumeReadyState();
+                  return;
+                }
+                playWakePing();
+                void doStartRecording();
+              }, 370);
               return;
             }
           }
@@ -372,7 +426,7 @@ export function useVoiceInput(
         stateRef.current = 'listening';
         setState('listening');
         ensureRecognitionRef.current('wake');
-      } else if (mode === 'stop' && stateRef.current === 'recording' && wakeTriggeredRef.current) {
+      } else if (mode === 'stop' && stateRef.current === 'recording' && wakeTriggeredRef.current && !isSendBlockedRef.current) {
         ensureRecognitionRef.current('stop');
       }
     }, delay);
@@ -380,6 +434,9 @@ export function useVoiceInput(
 
   // Action functions that use refs to avoid stale closures
   const doStartRecording = useCallback(async () => {
+    if (isSendBlockedRef.current) return;
+
+    const runToken = bumpVoiceRunToken();
     // Initialize AudioContext on user interaction
     ensureAudioContext();
     // Stop recognition intentionally — we'll restart in stop mode after recording starts
@@ -389,6 +446,16 @@ export function useVoiceInput(
 
     try {
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      if (!isVoiceRunActive(runToken)) {
+        stream.getTracks().forEach((track) => track.stop());
+        mediaRecorderRef.current = null;
+        chunksRef.current = [];
+        resetBrowserTranscript();
+        setInterimTranscript('');
+        resumeReadyState();
+        return;
+      }
+
       streamRef.current = stream;
       chunksRef.current = [];
       resetBrowserTranscript();
@@ -402,6 +469,10 @@ export function useVoiceInput(
       // Now start listening for stop phrases
       ensureRecognitionRef.current('stop');
     } catch (err) {
+      if (!isVoiceRunActive(runToken)) {
+        resumeReadyState();
+        return;
+      }
       console.error('Mic access denied:', err);
       const msg = err instanceof DOMException && err.name === 'NotAllowedError'
         ? 'Microphone permission denied'
@@ -412,28 +483,11 @@ export function useVoiceInput(
         ensureRecognitionRef.current('wake');
       }
     }
-  }, [resetBrowserTranscript, setVoiceState]);
+  }, [bumpVoiceRunToken, isVoiceRunActive, resetBrowserTranscript, resumeReadyState, setVoiceState]);
 
   const doDiscard = useCallback(() => {
-    setInterimTranscript('');
-    resetBrowserTranscript();
-    wakeTriggeredRef.current = false;
-    intentionalStopRef.current = true;
-    try { recognitionRef.current?.abort(); } catch { /* already stopped */ }
-    recognitionRef.current = null;
-
-    if (mediaRecorderRef.current?.state === 'recording') {
-      mediaRecorderRef.current.onstop = null;
-      mediaRecorderRef.current.stop();
-    }
-    stopStream();
-    if (wakeWordEnabledRef.current) {
-      setVoiceState('listening');
-      ensureRecognitionRef.current('wake');
-    } else {
-      setVoiceState('idle');
-    }
-  }, [resetBrowserTranscript, stopStream, setVoiceState]);
+    abortActiveVoiceFlow();
+  }, [abortActiveVoiceFlow]);
 
   const transcribeWithBackend = useCallback(async (blob: Blob) => {
     const fd = new FormData();
@@ -444,19 +498,21 @@ export function useVoiceInput(
     return cleanTranscript(text || '', stopPhrasesRegexRef.current);
   }, []);
 
-  const waitForBrowserTranscript = useCallback(async (timeoutMs = 350, stepMs = 25) => {
+  const waitForBrowserTranscript = useCallback(async (runToken: number, timeoutMs = 350, stepMs = 25) => {
     const startedAt = Date.now();
     while (Date.now() - startedAt < timeoutMs) {
+      if (!isVoiceRunActive(runToken)) return '';
       const current = browserTranscriptRef.current.trim();
       if (current) return current;
       await new Promise((resolve) => setTimeout(resolve, stepMs));
     }
-    return browserTranscriptRef.current.trim();
-  }, []);
+    return isVoiceRunActive(runToken) ? browserTranscriptRef.current.trim() : '';
+  }, [isVoiceRunActive]);
 
   const doStopAndTranscribe = useCallback(() => {
     const mr = mediaRecorderRef.current;
     if (!mr || mr.state !== 'recording') return;
+    const runToken = voiceRunTokenRef.current;
     setInterimTranscript('');
     wakeTriggeredRef.current = false;
     intentionalStopRef.current = true;
@@ -472,44 +528,47 @@ export function useVoiceInput(
       const blob = new Blob(chunksRef.current, { type: 'audio/webm' });
       stopStream();
       try {
+        if (!isVoiceRunActive(runToken)) return;
+
         const browserRecognitionSupported = Boolean(getSpeechRecognition());
         let browserTranscript = browserTranscriptRef.current.trim();
         let cleaned = '';
 
         if (sttInputModeRef.current === 'local') {
           cleaned = await transcribeWithBackend(blob);
+          if (!isVoiceRunActive(runToken)) return;
         } else {
           if (!browserTranscript) {
-            browserTranscript = await waitForBrowserTranscript();
+            browserTranscript = await waitForBrowserTranscript(runToken);
           }
+          if (!isVoiceRunActive(runToken)) return;
 
           if (browserTranscript) {
             cleaned = browserTranscript;
           } else if (sttInputModeRef.current === 'hybrid' || !browserRecognitionSupported) {
             cleaned = await transcribeWithBackend(blob);
+            if (!isVoiceRunActive(runToken)) return;
           } else {
             throw new Error('Browser speech recognition did not produce a transcript');
           }
         }
 
+        if (!isVoiceRunActive(runToken)) return;
         if (cleaned) onTranscriptionRef.current(cleaned);
         setError(null);
       } catch (err) {
+        if (!isVoiceRunActive(runToken)) return;
         console.error('Transcription failed:', err);
         setError(`Transcription failed: ${err instanceof Error ? err.message : String(err)}`);
       } finally {
         resetBrowserTranscript();
       }
-      // Resume wake word listener
-      if (wakeWordEnabledRef.current) {
-        setVoiceState('listening');
-        ensureRecognitionRef.current('wake');
-      } else {
-        setVoiceState('idle');
-      }
+
+      if (!isVoiceRunActive(runToken)) return;
+      resumeReadyState();
     };
     mr.stop();
-  }, [resetBrowserTranscript, stopStream, setVoiceState, transcribeWithBackend, waitForBrowserTranscript]);
+  }, [isVoiceRunActive, resetBrowserTranscript, resumeReadyState, stopStream, transcribeWithBackend, waitForBrowserTranscript]);
 
   const startWakeWordListener = useCallback(() => {
     if (!wakeWordSupported) {
@@ -581,6 +640,13 @@ export function useVoiceInput(
     });
   // eslint-disable-next-line react-hooks/exhaustive-deps -- run once on mount
   }, []);
+
+  useEffect(() => {
+    if (!isSendBlocked) return;
+    if (stateRef.current === 'recording' || stateRef.current === 'transcribing') {
+      abortActiveVoiceFlow();
+    }
+  }, [abortActiveVoiceFlow, isSendBlocked]);
 
   // Double-tap left Shift support
   const startRef = useRef(doStartRecording);

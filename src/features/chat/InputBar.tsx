@@ -119,7 +119,7 @@ export const InputBar = forwardRef<InputBarHandle, InputBarProps>(function Input
       input.style.opacity = '';
     }
     onSend('[voice] ' + text);
-  }, agentName, voiceLang, voicePhrasesVersion, effectiveSttInputMode);
+  }, agentName, voiceLang, voicePhrasesVersion, effectiveSttInputMode, { isSendBlocked: isGenerating });
 
   // Live transcription preview: write interim transcript to textarea during recording
   useEffect(() => {
