@@ -1283,6 +1283,65 @@ describe('POST /api/kanban/tasks/:id/complete — run key integrity', () => {
     expect(latest?.result).toBeUndefined();
   });
 
+  it('completes a run even when the gateway truncates the human-readable label', async () => {
+    const gatewaySessionKey = 'agent:main:subagent:stable-child';
+    let truncatedLabel = 'truncated-label';
+    const invokeGatewayToolMock = vi.fn(async (tool: string) => {
+      if (tool === 'sessions_spawn') {
+        return {
+          details: {
+            childSessionKey: gatewaySessionKey,
+          },
+        };
+      }
+      if (tool === 'subagents') {
+        return {
+          active: [],
+          recent: [{ label: truncatedLabel, status: 'done', sessionKey: gatewaySessionKey }],
+        };
+      }
+      if (tool === 'sessions_history') {
+        return {
+          messages: [
+            {
+              role: 'assistant',
+              content: 'Done\n[kanban:create]{"title":"proposal from truncated label"}[/kanban:create]',
+            },
+          ],
+        };
+      }
+      return {};
+    });
+
+    const app = await buildApp({ invokeGatewayToolMock });
+    const task = await createTask(app, { status: 'todo' });
+
+    const execRes = await app.request(`/api/kanban/tasks/${task.id}/execute`, json({}));
+    expect(execRes.status).toBe(200);
+    const running = await execRes.json() as KanbanTask;
+    truncatedLabel = `${running.run!.sessionKey.slice(0, 12)}…truncated`;
+    expect(truncatedLabel).not.toBe(running.run!.sessionKey);
+
+    await new Promise((resolve) => setTimeout(resolve, 3_200));
+
+    expect(invokeGatewayToolMock).toHaveBeenCalledWith('sessions_history', {
+      sessionKey: gatewaySessionKey,
+      limit: 3,
+    });
+
+    const tasksRes = await app.request('/api/kanban/tasks');
+    const tasks = await tasksRes.json() as { items: KanbanTask[] };
+    const completed = tasks.items.find((item) => item.id === task.id);
+    expect(completed?.status).toBe('review');
+    expect(completed?.run?.status).toBe('done');
+    expect(completed?.run?.sessionKey).toBe(running.run!.sessionKey);
+    expect(completed?.result).toContain('Done');
+
+    const proposalsRes = await app.request('/api/kanban/proposals');
+    const proposals = await proposalsRes.json() as { proposals: Array<{ payload: Record<string, unknown> }> };
+    expect(proposals.proposals.find((proposal) => proposal.payload.title === 'proposal from truncated label')).toBeDefined();
+  });
+
   it('ignores late stale poller completion from run 1 after run 2 is active', async () => {
     vi.useFakeTimers();
 

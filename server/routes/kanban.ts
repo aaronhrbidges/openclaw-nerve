@@ -70,11 +70,38 @@ export function cleanupKanbanPollers(): void {
   activePollTimers.clear();
 }
 
-/** Poll gateway subagents for a kanban run session key until it finishes, then complete the run. */
+interface KanbanRunIdentity {
+  correlationKey: string;
+  gatewaySessionKey?: string;
+  runId?: string;
+}
+
+function findGatewayRunMatch(
+  sessions: Array<Record<string, unknown>>,
+  identity: KanbanRunIdentity,
+): Record<string, unknown> | undefined {
+  if (identity.gatewaySessionKey) {
+    const bySessionKey = sessions.find((session) => String(session.sessionKey ?? '') === identity.gatewaySessionKey);
+    if (bySessionKey) return bySessionKey;
+  }
+
+  if (identity.runId) {
+    const byRunId = sessions.find((session) => String(session.runId ?? '') === identity.runId);
+    if (byRunId) return byRunId;
+  }
+
+  if (!identity.gatewaySessionKey && !identity.runId) {
+    return sessions.find((session) => String(session.label ?? '') === identity.correlationKey);
+  }
+
+  return undefined;
+}
+
+/** Poll gateway subagents for a kanban run until it finishes, then complete the run. */
 function pollSessionCompletion(
   store: ReturnType<typeof getKanbanStore>,
   taskId: string,
-  sessionKey: string,
+  identity: KanbanRunIdentity,
   intervalMs = 5_000,
   maxAttempts = 720, // 60 minutes max
 ): void {
@@ -83,8 +110,8 @@ function pollSessionCompletion(
   const poll = async () => {
     attempts++;
     if (attempts > maxAttempts) {
-      console.warn(`[kanban] Polling timed out for task ${taskId} (sessionKey: ${sessionKey})`);
-      await store.completeRun(taskId, sessionKey, undefined, 'Run timed out (polling limit reached)').catch(() => {});
+      console.warn(`[kanban] Polling timed out for task ${taskId} (runKey: ${identity.correlationKey})`);
+      await store.completeRun(taskId, identity.correlationKey, undefined, 'Run timed out (polling limit reached)').catch(() => {});
       return;
     }
 
@@ -101,9 +128,7 @@ function pollSessionCompletion(
       const recent = (parsed.recent ?? []) as Array<Record<string, unknown>>;
       const all = [...active, ...recent];
 
-      // The task store run.sessionKey is also the unique spawn label.
-      // Exact match only, so stale reruns cannot collide on stable task id.
-      const match = all.find((s) => String(s.label ?? '') === sessionKey);
+      const match = findGatewayRunMatch(all, identity);
 
       if (!match) {
         // Not found yet -- may not have registered, keep trying
@@ -112,49 +137,56 @@ function pollSessionCompletion(
       }
 
       const status = match.status as string;
+      const gatewaySessionKey = typeof match.sessionKey === 'string'
+        ? match.sessionKey
+        : identity.gatewaySessionKey;
 
       if (status === 'done') {
         // Fetch session history to get the result text
         let resultText = 'Completed (no result text)';
-        try {
-          const histRaw = await invokeGatewayTool('sessions_history', {
-            sessionKey: match.sessionKey,
-            limit: 3,
-          });
-          const histParsed = parseGatewayResponse(histRaw);
-          const messages = (histParsed.messages ?? []) as Array<Record<string, unknown>>;
-          const lastAssistant = [...messages].reverse().find((m) => m.role === 'assistant');
-          if (lastAssistant) {
-            const content = lastAssistant.content;
-            if (typeof content === 'string') {
-              resultText = content;
-            } else if (Array.isArray(content)) {
-              const textPart = (content as Array<Record<string, unknown>>).find((p) => p.type === 'text');
-              if (textPart && typeof textPart.text === 'string') resultText = textPart.text;
+        if (!gatewaySessionKey) {
+          console.warn(`[kanban] Run ${identity.correlationKey} completed without a gateway session key`);
+        } else {
+          try {
+            const histRaw = await invokeGatewayTool('sessions_history', {
+              sessionKey: gatewaySessionKey,
+              limit: 3,
+            });
+            const histParsed = parseGatewayResponse(histRaw);
+            const messages = (histParsed.messages ?? []) as Array<Record<string, unknown>>;
+            const lastAssistant = [...messages].reverse().find((m) => m.role === 'assistant');
+            if (lastAssistant) {
+              const content = lastAssistant.content;
+              if (typeof content === 'string') {
+                resultText = content;
+              } else if (Array.isArray(content)) {
+                const textPart = (content as Array<Record<string, unknown>>).find((p) => p.type === 'text');
+                if (textPart && typeof textPart.text === 'string') resultText = textPart.text;
+              }
             }
+          } catch (err) {
+            console.warn(`[kanban] Could not fetch history for ${identity.correlationKey}:`, err);
           }
-        } catch (err) {
-          console.warn(`[kanban] Could not fetch history for ${sessionKey}:`, err);
         }
 
         const markers = parseKanbanMarkers(resultText);
         const cleanResult = markers.length > 0 ? stripKanbanMarkers(resultText) : resultText;
 
-        const completedTask = await store.completeRun(taskId, sessionKey, cleanResult).catch((err) => {
+        const completedTask = await store.completeRun(taskId, identity.correlationKey, cleanResult).catch((err) => {
           console.error(`[kanban] Failed to complete run for task ${taskId}:`, err);
           return null;
         });
         if (!completedTask) return;
 
-        console.log(`[kanban] Run completed for task ${taskId} (sessionKey: ${sessionKey})`);
+        console.log(`[kanban] Run completed for task ${taskId} (runKey: ${identity.correlationKey})`);
 
         for (const marker of markers) {
           try {
             await store.createProposal({
               type: marker.type,
               payload: marker.payload,
-              sourceSessionKey: sessionKey,
-              proposedBy: `agent:${sessionKey}`,
+              sourceSessionKey: identity.correlationKey,
+              proposedBy: `agent:${identity.correlationKey}`,
             });
           } catch (err) {
             console.warn(`[kanban] Failed to create proposal from marker:`, err);
@@ -165,7 +197,7 @@ function pollSessionCompletion(
 
       if (status === 'error' || status === 'failed') {
         const errorMsg = (match.error as string) || 'Agent session failed';
-        await store.completeRun(taskId, sessionKey, undefined, errorMsg).catch(() => {});
+        await store.completeRun(taskId, identity.correlationKey, undefined, errorMsg).catch(() => {});
         return;
       }
 
@@ -735,9 +767,19 @@ app.post('/api/kanban/tasks/:id/execute', rateLimitGeneral, async (c) => {
     if (thinking) spawnArgs.thinking = thinking;
 
     invokeGatewayTool('sessions_spawn', spawnArgs)
-      .then(() => {
-        // Poll for session completion in the background
-        pollSessionCompletion(store, id, runSessionKey);
+      .then((spawnRaw) => {
+        const spawn = parseGatewayResponse(spawnRaw);
+        const gatewaySessionKey = typeof spawn.childSessionKey === 'string' ? spawn.childSessionKey : undefined;
+        const runId = typeof spawn.runId === 'string' ? spawn.runId : undefined;
+
+        // Poll for session completion in the background, using the stable spawned
+        // session key when the gateway provides one. The human-readable run key
+        // stays in the kanban store for correlation and stale-run protection.
+        pollSessionCompletion(store, id, {
+          correlationKey: runSessionKey,
+          gatewaySessionKey,
+          runId,
+        });
       })
       .catch((err) => {
         console.error(`[kanban] Failed to spawn session for task ${id}:`, err);
