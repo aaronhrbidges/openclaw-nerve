@@ -6,23 +6,27 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
-## [1.5.0] - 2026-03-23
+## [1.5.0] - 2026-03-25
 
 ### Highlights
 
 **Workspace context now follows the owning top-level agent**. File browser state, Memory, Config, and Skills now switch with the selected top-level agent instead of leaking across agents, and dirty editor tabs now block cross-agent switches with an explicit save / discard / cancel choice (PR #123).
 
-**Agent runtime flows got tighter**. Subagents can now choose whether they stay visible after one-shot runs, subagent deletion is more reliable, and the model catalog waits longer on cold starts so configured Codex and other models are more likely to appear in the spawn dialog (PR #119, PR #120, PR #124).
+**Agent runtime flows got tighter**. Subagents can now choose whether they stay visible after one-shot runs, subagent deletion is more reliable, the model catalog waits longer on cold starts so configured Codex and other models are more likely to appear in the spawn dialog, and remote or sandboxed workspace access now falls back cleanly through the gateway when local filesystem access is unavailable (PR #119, PR #120, PR #124, PR #145).
 
 **Voice and readability both moved forward**. Xiaomi MiMo joins as a first-class TTS provider, the new global font size control now reaches more of the UI, and small-screen inputs keep a fixed 16px size to avoid mobile auto-zoom regressions (PR #128, PR #129, PR #130).
 
-**Installer and mobile edge cases got another hardening pass**. Tailscale setup now supports distinct IP and Serve flows, wake word is disabled on mobile web, and the right sidebar can collapse narrower on smaller screens (PR #116, PR #118, PR #122).
+**Installer, setup, and execution hardening all moved up a notch**. Tailscale setup now supports distinct IP and Serve flows, wake word is disabled on mobile web, setup defaults are stricter around device approval and can infer the agent name from local metadata, and kanban reruns now keep stable identifiers without stale completion state leaking across runs (PR #116, PR #118, PR #122, PR #141, PR #143, PR #151).
+
+**Workspace navigation got smoother**. Markdown and chat workspace path references can now resolve and reveal files safely in the file browser, with follow-up fixes for missing-path semantics and refreshed open handlers (PR #148, PR #149).
 
 ### Added
 - Tailscale IP and Tailscale Serve setup flows in the installer, with matching installer-step documentation (PR #116)
 - An **After run** selector for one-shot subagents, with **Keep** and **Delete** cleanup options (PR #120)
 - **Font size setting** in Appearance settings, adjustable from 10px to 24px via dropdown, stored in `localStorage`, and applied instantly via a CSS custom property (PR #128)
 - **Xiaomi MiMo** as a first-class TTS provider, including API key plumbing, server-side synthesis support, and Audio settings controls for model, voice, and style (PR #129)
+- **Gateway RPC fallback for remote and sandboxed workspace access**, including a sandboxed-workspace notice in the Memory panel when local filesystem access is unavailable (PR #145)
+- **Safe workspace path resolve and reveal** from markdown and chat references into the file browser (PR #148)
 
 ### Changed
 - Workspace scope is now derived from the owning top-level agent, including when viewing subagent sessions (PR #123)
@@ -32,6 +36,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Mobile web now disables wake word and points users to manual mic activation instead (PR #118)
 - Right sidebar resizing now allows a narrower minimum width (PR #122)
 - Cron list and dialog typography now fully follows the global font size system, with the remaining fixed pixel sizes converted to `rem` units (PR #130)
+- Setup defaults now infer `AGENT_NAME` from local identity metadata when the value is not already explicitly set (PR #151)
 
 ### Fixed
 - Subagent session deletion no longer fails on the Nerve side when the gateway closes a proxied WebSocket normally during delete flows (PR #119)
@@ -40,6 +45,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Small-screen text inputs now stay at 16px so mobile browsers do not auto-zoom the composer and settings controls after font size changes (PR #130)
 - Older top-level agent chats stay visible in the sidebar instead of disappearing once they fall outside the recent-activity query window (PR #134)
 - Kanban runtime data now lives under `${NERVE_DATA_DIR:-~/.nerve}/kanban`, and legacy installs automatically migrate data from old `server-dist/data/kanban` or `server/data/kanban` locations on first run (PR #135)
+- Setup no longer attempts to approve malformed pending device request IDs, and gateway auth validation now uses a working token probe during defaults and check flows (PR #141)
+- Kanban run completion now accepts stable child identifiers, ignores stale client `run` patches, stops stale pollers after reruns, and normalizes spawn session aliases consistently (PR #143)
+- Remote and sandboxed workspace gateway fallback now authenticates correctly with device identity in real OpenShell-style deployments (PR #145)
+- Workspace path resolve now returns `404` for safe missing targets, and markdown file-link handlers refresh when workspace path callbacks change (PR #149)
 
 ### Documentation
 - Added a dedicated Tailscale guide for existing installs, linked from the docs index and configuration docs (PR #117)
