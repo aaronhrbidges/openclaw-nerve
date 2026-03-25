@@ -181,19 +181,21 @@ test(voice): add wake-word persistence tests
 ## Pull Request Process
 
 1. **Open an issue first** for non-trivial changes. Discuss the approach before writing code.
-2. **Branch from `master`**: `git checkout -b feat/my-feature`.
-3. **Keep PRs focused** — one feature or fix per PR.
-4. **Ensure all checks pass** before requesting review:
+2. **Create a branch from `master`**: `git checkout -b feat/my-feature`, then open your PR back into `master`.
+3. **Use branches even if you have GitHub Write access**. `master` is protected, so direct pushes there are not the normal workflow.
+4. **Keep PRs focused** — one feature or fix per PR.
+5. **Ensure all checks pass** before requesting review:
    ```bash
    npm run lint
    npm run build
    npm run build:server
    npm test -- --run
    ```
-5. **Fill out the PR template** — describe what, why, and how.
-6. **Include tests** for new features. Bug fixes should include a regression test when feasible.
-7. **Screenshots welcome** for UI changes.
-8. A maintainer will review, possibly request changes, and merge.
+6. **Fill out the PR template** — describe what, why, and how.
+7. **Include tests** for new features. Bug fixes should include a regression test when feasible.
+8. **Screenshots welcome** for UI changes.
+9. A maintainer may push small fixes to your PR branch when GitHub allows it, but fork permissions can vary.
+10. A maintainer will review, possibly request changes, and merge.
 
 ## License
 
