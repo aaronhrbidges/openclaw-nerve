@@ -6,6 +6,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [1.5.1] - 2026-03-25
+
+### Fixed
+- Restored the browser websocket auth identity to `webchat-ui` so remote deployments do not trip the gateway's stricter Control UI device-identity requirement on non-secure page origins. This fixes the 1.5.0 login failure reported by users connecting to remote gateway endpoints from plain remote HTTP Nerve pages.
+
 ## [1.5.0] - 2026-03-25
 
 ### Highlights
