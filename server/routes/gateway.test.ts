@@ -3,11 +3,18 @@ import { describe, it, expect, vi, afterEach } from 'vitest';
 import { Hono } from 'hono';
 
 let execFileImpl: (...args: unknown[]) => void;
+let readFileImpl: (...args: unknown[]) => Promise<string>;
 let invokeGatewayImpl: (tool: string, args: Record<string, unknown>) => unknown;
 
 vi.mock('node:child_process', async (importOriginal) => {
   const actual = await importOriginal<typeof import('node:child_process')>();
   const mock = { ...actual, execFile: (...args: unknown[]) => execFileImpl(...args) };
+  return { ...mock, default: mock };
+});
+
+vi.mock('node:fs/promises', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('node:fs/promises')>();
+  const mock = { ...actual, readFile: (...args: unknown[]) => readFileImpl(...args) };
   return { ...mock, default: mock };
 });
 
@@ -60,12 +67,26 @@ vi.mock('node:net', () => {
   return { Socket: MockSocket, default: { Socket: MockSocket } };
 });
 
-const GOOD_MODELS = JSON.stringify({
-  models: [
-    { key: 'anthropic/claude-opus-4', name: 'Claude Opus 4', available: true },
-    { key: 'openai/gpt-4o', name: 'GPT-4o', available: true },
-  ],
-});
+const OPENCLAW_CONFIG = {
+  agents: {
+    defaults: {
+      model: {
+        primary: 'zai/glm-4.7',
+        fallbacks: [
+          'openrouter/xiaomi/mimo-v2-pro',
+          'zai/glm-4.5',
+          'ollama/qwen2.5:7b-instruct-q5_K_M',
+        ],
+      },
+      models: {
+        'zai/glm-4.7': { alias: 'glm-4.7' },
+        'openrouter/xiaomi/mimo-v2-pro': { alias: 'mimo-v2-pro' },
+        'zai/glm-4.5': { alias: 'glm-4.5' },
+        'ollama/qwen2.5:7b-instruct-q5_K_M': { alias: 'qwen-local' },
+      },
+    },
+  },
+};
 
 import gatewayRoutes from './gateway.js';
 
@@ -78,34 +99,290 @@ function buildApp() {
 describe('gateway routes', () => {
   afterEach(() => {
     vi.restoreAllMocks();
+    delete process.env.OPENCLAW_CONFIG_PATH;
   });
 
   function setDefaults() {
     execFileImpl = (_bin: unknown, _args: unknown, _opts: unknown, cb: unknown) => {
-      (cb as (err: null, stdout: string) => void)(null, GOOD_MODELS);
+      (cb as (err: null, stdout: string) => void)(null, '');
     };
+    readFileImpl = async () => JSON.stringify(OPENCLAW_CONFIG);
     invokeGatewayImpl = () => ({});
   }
 
   describe('GET /api/gateway/models', () => {
-    it('returns parsed model list', async () => {
+    it('returns the configured primary model', async () => {
       setDefaults();
+      process.env.OPENCLAW_CONFIG_PATH = '/tmp/openclaw.json';
+      readFileImpl = async (path: unknown) => {
+        expect(path).toBe('/tmp/openclaw.json');
+        return JSON.stringify({
+          agents: {
+            defaults: {
+              model: {
+                primary: 'zai/glm-4.7',
+              },
+            },
+          },
+        });
+      };
+
       const app = buildApp();
       const res = await app.request('/api/gateway/models');
       expect(res.status).toBe(200);
-      const json = (await res.json()) as { models: Array<{ id: string; label: string; provider: string }> };
-      expect(json.models.length).toBeGreaterThanOrEqual(1);
-      for (const m of json.models) {
-        expect(m).toHaveProperty('id');
-        expect(m).toHaveProperty('label');
-        expect(m).toHaveProperty('provider');
-      }
+      expect(await res.json()).toEqual({
+        models: [
+          {
+            id: 'zai/glm-4.7',
+            label: 'glm-4.7',
+            provider: 'zai',
+            configured: true,
+            role: 'primary',
+          },
+        ],
+        error: null,
+        source: 'config',
+      });
+    });
+
+    it('returns primary plus fallbacks in declared order', async () => {
+      setDefaults();
+      readFileImpl = async () => JSON.stringify({
+        agents: {
+          defaults: {
+            model: {
+              primary: 'zai/glm-4.7',
+              fallbacks: [
+                'openrouter/xiaomi/mimo-v2-pro',
+                'zai/glm-4.5',
+              ],
+            },
+            models: {
+              'zai/glm-4.7': { alias: 'glm-4.7' },
+              'openrouter/xiaomi/mimo-v2-pro': { alias: 'mimo-v2-pro' },
+              'zai/glm-4.5': { alias: 'glm-4.5' },
+            },
+          },
+        },
+      });
+
+      const app = buildApp();
+      const res = await app.request('/api/gateway/models');
+      expect(res.status).toBe(200);
+      expect(await res.json()).toEqual({
+        models: [
+          {
+            id: 'zai/glm-4.7',
+            label: 'glm-4.7',
+            provider: 'zai',
+            alias: 'glm-4.7',
+            configured: true,
+            role: 'primary',
+          },
+          {
+            id: 'openrouter/xiaomi/mimo-v2-pro',
+            label: 'mimo-v2-pro',
+            provider: 'openrouter',
+            alias: 'mimo-v2-pro',
+            configured: true,
+            role: 'fallback',
+          },
+          {
+            id: 'zai/glm-4.5',
+            label: 'glm-4.5',
+            provider: 'zai',
+            alias: 'glm-4.5',
+            configured: true,
+            role: 'fallback',
+          },
+        ],
+        error: null,
+        source: 'config',
+      });
+    });
+
+    it('includes remaining allowlist entries after primary and fallbacks', async () => {
+      setDefaults();
+      readFileImpl = async () => JSON.stringify({
+        agents: {
+          defaults: {
+            model: {
+              primary: 'zai/glm-4.7',
+              fallbacks: [
+                'openrouter/xiaomi/mimo-v2-pro',
+                'zai/glm-4.5',
+                'ollama/qwen2.5:7b-instruct-q5_K_M',
+              ],
+            },
+            models: {
+              'zai/glm-4.7': { alias: 'glm-4.7' },
+              'openrouter/xiaomi/mimo-v2-pro': { alias: 'mimo-v2-pro' },
+              'zai/glm-4.5': { alias: 'glm-4.5' },
+              'ollama/qwen2.5:7b-instruct-q5_K_M': { alias: 'qwen-local' },
+              'anthropic/claude-sonnet-4': { alias: 'claude-sonnet-4' },
+              'openai/gpt-4o-mini': { alias: 'gpt-4o-mini' },
+            },
+          },
+        },
+      });
+
+      const app = buildApp();
+      const res = await app.request('/api/gateway/models');
+      expect(res.status).toBe(200);
+      expect(await res.json()).toEqual({
+        models: [
+          {
+            id: 'zai/glm-4.7',
+            label: 'glm-4.7',
+            provider: 'zai',
+            alias: 'glm-4.7',
+            configured: true,
+            role: 'primary',
+          },
+          {
+            id: 'openrouter/xiaomi/mimo-v2-pro',
+            label: 'mimo-v2-pro',
+            provider: 'openrouter',
+            alias: 'mimo-v2-pro',
+            configured: true,
+            role: 'fallback',
+          },
+          {
+            id: 'zai/glm-4.5',
+            label: 'glm-4.5',
+            provider: 'zai',
+            alias: 'glm-4.5',
+            configured: true,
+            role: 'fallback',
+          },
+          {
+            id: 'ollama/qwen2.5:7b-instruct-q5_K_M',
+            label: 'qwen-local',
+            provider: 'ollama',
+            alias: 'qwen-local',
+            configured: true,
+            role: 'fallback',
+          },
+          {
+            id: 'anthropic/claude-sonnet-4',
+            label: 'claude-sonnet-4',
+            provider: 'anthropic',
+            alias: 'claude-sonnet-4',
+            configured: true,
+            role: 'allowed',
+          },
+          {
+            id: 'openai/gpt-4o-mini',
+            label: 'gpt-4o-mini',
+            provider: 'openai',
+            alias: 'gpt-4o-mini',
+            configured: true,
+            role: 'allowed',
+          },
+        ],
+        error: null,
+        source: 'config',
+      });
+    });
+
+    it('dedupes repeated model refs while preserving stable role order', async () => {
+      setDefaults();
+      readFileImpl = async () => JSON.stringify({
+        agents: {
+          defaults: {
+            model: {
+              primary: 'zai/glm-4.7',
+              fallbacks: [
+                'zai/glm-4.7',
+                'openrouter/xiaomi/mimo-v2-pro',
+                'openrouter/xiaomi/mimo-v2-pro',
+              ],
+            },
+            models: {
+              'zai/glm-4.7': { alias: 'glm-4.7' },
+              'openrouter/xiaomi/mimo-v2-pro': { alias: 'mimo-v2-pro' },
+              'anthropic/claude-sonnet-4': { alias: 'claude-sonnet-4' },
+            },
+          },
+        },
+      });
+
+      const app = buildApp();
+      const res = await app.request('/api/gateway/models');
+      expect(res.status).toBe(200);
+      expect(await res.json()).toEqual({
+        models: [
+          {
+            id: 'zai/glm-4.7',
+            label: 'glm-4.7',
+            provider: 'zai',
+            alias: 'glm-4.7',
+            configured: true,
+            role: 'primary',
+          },
+          {
+            id: 'openrouter/xiaomi/mimo-v2-pro',
+            label: 'mimo-v2-pro',
+            provider: 'openrouter',
+            alias: 'mimo-v2-pro',
+            configured: true,
+            role: 'fallback',
+          },
+          {
+            id: 'anthropic/claude-sonnet-4',
+            label: 'claude-sonnet-4',
+            provider: 'anthropic',
+            alias: 'claude-sonnet-4',
+            configured: true,
+            role: 'allowed',
+          },
+        ],
+        error: null,
+        source: 'config',
+      });
+    });
+
+    it('returns an explicit error when the config has no configured models', async () => {
+      setDefaults();
+      readFileImpl = async () => JSON.stringify({
+        agents: {
+          defaults: {},
+        },
+      });
+
+      const app = buildApp();
+      const res = await app.request('/api/gateway/models');
+      expect(res.status).toBe(200);
+      expect(await res.json()).toEqual({
+        models: [],
+        error: 'No models configured in OpenClaw config.',
+        source: 'config',
+      });
+    });
+
+    it('returns an explicit error when the config is unreadable', async () => {
+      setDefaults();
+      readFileImpl = async () => {
+        throw new Error('ENOENT: no such file or directory');
+      };
+
+      const app = buildApp();
+      const res = await app.request('/api/gateway/models');
+      expect(res.status).toBe(200);
+      expect(await res.json()).toEqual({
+        models: [],
+        error: 'Could not read OpenClaw config.',
+        source: 'config',
+      });
     });
 
     it('uses a long enough timeout for model catalog fetches', async () => {
       vi.resetModules();
       vi.doMock('node:child_process', () => ({
         execFile: (...args: unknown[]) => execFileImpl(...args),
+      }));
+      vi.doMock('node:fs/promises', () => ({
+        readFile: (...args: unknown[]) => readFileImpl(...args),
       }));
       vi.doMock('../lib/config.js', () => ({
         config: {
@@ -127,44 +404,6 @@ describe('gateway routes', () => {
 
       const mod = await import('./gateway.js');
       expect(mod.MODEL_LIST_TIMEOUT_MS).toBeGreaterThanOrEqual(15_000);
-    });
-
-    it('returns empty array when openclaw binary fails', async () => {
-      execFileImpl = (_bin: unknown, _args: unknown, _opts: unknown, cb: unknown) => {
-        (cb as (err: Error, stdout: string) => void)(new Error('not found'), '');
-      };
-      invokeGatewayImpl = () => ({});
-
-      vi.resetModules();
-      vi.doMock('node:child_process', () => ({
-        execFile: (...args: unknown[]) => execFileImpl(...args),
-      }));
-      vi.doMock('../lib/config.js', () => ({
-        config: {
-          auth: false, port: 3000, host: '127.0.0.1', sslPort: 3443,
-          gatewayUrl: 'http://localhost:3100', gatewayToken: 'test-token',
-        },
-        SESSION_COOKIE_NAME: 'nerve_session_3000',
-      }));
-      vi.doMock('../middleware/rate-limit.js', () => ({
-        rateLimitGeneral: vi.fn((_c: unknown, next: () => Promise<void>) => next()),
-        rateLimitRestart: vi.fn((_c: unknown, next: () => Promise<void>) => next()),
-      }));
-      vi.doMock('../lib/openclaw-bin.js', () => ({
-        resolveOpenclawBin: () => '/usr/bin/openclaw',
-      }));
-      vi.doMock('../lib/gateway-client.js', () => ({
-        invokeGatewayTool: vi.fn(async (tool: string, args: Record<string, unknown>) => invokeGatewayImpl(tool, args)),
-      }));
-
-      const mod = await import('./gateway.js');
-      const app = new Hono();
-      app.route('/', mod.default);
-
-      const res = await app.request('/api/gateway/models');
-      expect(res.status).toBe(200);
-      const json = (await res.json()) as { models: unknown[] };
-      expect(json.models).toEqual([]);
     });
   });
 
