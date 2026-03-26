@@ -149,6 +149,28 @@ describe('ChatHeader', () => {
     expect(mockOnToggleFileBrowser).toHaveBeenCalledTimes(1);
   });
 
+  it('shows a truthful error and disables the model selector when no configured models are available', () => {
+    const mockUseModelEffort = vi.mocked(useModelEffort);
+    mockUseModelEffort.mockReturnValue({
+      ...defaultMockHook,
+      modelOptions: [],
+      selectedModel: '',
+      uiError: 'Could not load configured models',
+    });
+
+    render(
+      <ChatHeader
+        onReset={mockOnReset}
+        onAbort={mockOnAbort}
+        isGenerating={false}
+      />
+    );
+
+    expect(screen.getByRole('status')).toHaveTextContent('Could not load configured models');
+    expect(screen.getByRole('button', { name: 'Model' })).toBeDisabled();
+    expect(screen.getByRole('button', { name: 'Model' })).toHaveTextContent('No configured models');
+  });
+
   it('shows abort button when generating', () => {
     const mockUseModelEffort = vi.mocked(useModelEffort);
     mockUseModelEffort.mockReturnValue(defaultMockHook);

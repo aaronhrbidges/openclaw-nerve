@@ -42,6 +42,11 @@ export function ChatHeader({
     uiError,
   } = useModelEffort();
 
+  const modelSelectorDisabled = controlsDisabled || modelOptions.length === 0;
+  const visibleModelOptions = modelOptions.length > 0
+    ? modelOptions
+    : [{ value: '', label: 'No configured models' }];
+
   return (
     <div className="panel-header items-center gap-2 overflow-x-auto border-l-[3px] border-l-primary/70 px-2.5 py-2 whitespace-nowrap sm:gap-2.5 sm:px-3 sm:py-3">
       {/* Mobile chrome controls */}
@@ -103,11 +108,11 @@ export function ChatHeader({
             value={selectedModel}
             onChange={handleModelChange}
             ariaLabel="Model"
-            disabled={controlsDisabled}
-            title={controlsDisabled ? 'Connect to gateway to change model' : undefined}
+            disabled={modelSelectorDisabled}
+            title={controlsDisabled ? 'Connect to gateway to change model' : uiError || undefined}
             triggerClassName="max-w-[110px] rounded-xl border-border/75 bg-background/65 px-2.5 py-1.5 text-[0.733rem] font-sans text-foreground sm:max-w-[180px] sm:min-h-8 sm:px-2.5 sm:py-1"
             menuClassName="min-w-[180px] rounded-2xl border-border/80 bg-card/98 p-1 shadow-[0_20px_50px_rgba(0,0,0,0.28)] sm:min-w-[220px]"
-            options={modelOptions}
+            options={visibleModelOptions}
           />
         </div>
         <div className="flex min-w-0 shrink-0 items-center gap-0.5 sm:gap-1">
