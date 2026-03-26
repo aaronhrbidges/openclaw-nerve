@@ -2,7 +2,6 @@ import type React from 'react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { SpawnAgentDialog } from './SpawnAgentDialog';
-import { FALLBACK_MODELS } from './fallbackModels';
 
 const mockUseSessionContext = vi.fn();
 
@@ -49,8 +48,14 @@ describe('SpawnAgentDialog', () => {
       agentName: 'Kim',
     });
     globalThis.fetch = vi.fn(() => Promise.resolve({
-      ok: false,
-      json: () => Promise.resolve({}),
+      ok: true,
+      json: () => Promise.resolve({
+        models: [
+          { id: 'anthropic/claude-sonnet-4-5', alias: 'claude-sonnet-4-5' },
+        ],
+        error: null,
+        source: 'config',
+      }),
     } as Response)) as typeof fetch;
   });
 
@@ -87,8 +92,52 @@ describe('SpawnAgentDialog', () => {
     });
   });
 
-  it('includes gpt-5.4 in the fallback model list when the catalog fetch fails', () => {
-    expect(FALLBACK_MODELS.some((option) => option.value === 'openai-codex/gpt-5.4')).toBe(true);
+  it('shows only configured models from the gateway catalog', async () => {
+    globalThis.fetch = vi.fn(() => Promise.resolve({
+      ok: true,
+      json: () => Promise.resolve({
+        models: [
+          { id: 'zai/glm-4.7', alias: 'glm-4.7' },
+          { id: 'ollama/qwen2.5:7b-instruct-q5_K_M', alias: 'qwen-local' },
+        ],
+        error: null,
+        source: 'config',
+      }),
+    } as Response)) as typeof fetch;
+
+    renderDialog();
+    fireEvent.click(screen.getByText('New agent'));
+
+    const modelSelect = await screen.findByRole('button', { name: 'Select model' });
+    expect(modelSelect).toHaveTextContent('glm-4.7');
+
+    fireEvent.click(modelSelect);
+    expect(await screen.findByRole('option', { name: 'qwen-local' })).toBeInTheDocument();
+    expect(screen.queryByRole('option', { name: 'claude-sonnet-4-5' })).toBeNull();
+    expect(screen.queryByRole('option', { name: 'gpt-5.4' })).toBeNull();
+  });
+
+  it('disables launch and shows an error when no configured models are available', async () => {
+    globalThis.fetch = vi.fn(() => Promise.resolve({
+      ok: true,
+      json: () => Promise.resolve({
+        models: [],
+        error: 'Could not load configured models',
+        source: 'config',
+      }),
+    } as Response)) as typeof fetch;
+
+    const onSpawn = vi.fn(async () => {});
+    renderDialog(onSpawn);
+
+    fireEvent.click(screen.getByText('New agent'));
+    fireEvent.change(screen.getByPlaceholderText('e.g. reviewer'), { target: { value: 'research' } });
+    fireEvent.change(screen.getByPlaceholderText('What should this new agent start working on?'), { target: { value: 'test task' } });
+
+    expect(await screen.findByText('Could not load configured models')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Select model' })).toBeDisabled();
+    expect(screen.getByText('Create agent')).toBeDisabled();
+    expect(onSpawn).not.toHaveBeenCalled();
   });
 
   it('keeps the dialog open when spawning is deferred by a guard', async () => {
@@ -97,6 +146,9 @@ describe('SpawnAgentDialog', () => {
     renderDialog(onSpawn, onOpenChange);
 
     fireEvent.click(screen.getByText('New agent'));
+    await waitFor(() => {
+      expect(screen.getByRole('button', { name: 'Select model' })).toHaveTextContent('claude-sonnet-4-5');
+    });
     fireEvent.change(screen.getByPlaceholderText('e.g. reviewer'), { target: { value: 'research' } });
     fireEvent.change(screen.getByPlaceholderText('What should this new agent start working on?'), { target: { value: 'test task' } });
     fireEvent.click(screen.getByText('Create agent'));

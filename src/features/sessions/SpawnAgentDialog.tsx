@@ -13,7 +13,6 @@ import { InlineSelect } from '@/components/ui/InlineSelect';
 import type { InlineSelectOption } from '@/components/ui/InlineSelect';
 import { useSessionContext, type SpawnSessionOpts } from '@/contexts/SessionContext';
 import { type SubagentCleanupMode } from './buildSpawnSubagentMessage';
-import { FALLBACK_MODELS } from './fallbackModels';
 import { getSessionKey } from '@/types';
 import {
   getRootAgentSessionKey,
@@ -33,6 +32,10 @@ const AFTER_RUN_OPTIONS: InlineSelectOption[] = [
 ];
 
 type ModelEntry = { id: string; alias?: string };
+type ModelCatalogResponse = {
+  models?: Array<{ id: string; label?: string; alias?: string }>;
+  error?: string | null;
+};
 type SpawnMode = 'root' | 'subagent' | null;
 
 function deriveAlias(id: string): string {
@@ -59,6 +62,7 @@ export function SpawnAgentDialog({ open, onOpenChange, onSpawn }: SpawnAgentDial
   const [cleanup, setCleanup] = useState<SubagentCleanupMode>('keep');
   const [spawning, setSpawning] = useState(false);
   const [fetchedModels, setFetchedModels] = useState<ModelEntry[]>([]);
+  const [modelLoadError, setModelLoadError] = useState('');
   const [spawnError, setSpawnError] = useState('');
 
   const rootSessions = useMemo(
@@ -72,16 +76,25 @@ export function SpawnAgentDialog({ open, onOpenChange, onSpawn }: SpawnAgentDial
   useEffect(() => {
     if (!open) return;
     let cancelled = false;
+    setFetchedModels([]);
+    setModelLoadError('');
 
     (async () => {
       try {
         const res = await fetch('/api/gateway/models');
-        if (!res.ok) return;
-        const data = await res.json() as { models?: Array<{ id: string; label?: string; alias?: string }> };
-        if (cancelled || !Array.isArray(data.models)) return;
-        setFetchedModels(data.models.map((entry) => ({ id: entry.id, alias: entry.alias || entry.label })));
+        if (!res.ok) {
+          if (!cancelled) setModelLoadError('Could not load configured models');
+          return;
+        }
+        const data = await res.json() as ModelCatalogResponse;
+        if (cancelled) return;
+        const models = Array.isArray(data.models)
+          ? data.models.map((entry) => ({ id: entry.id, alias: entry.alias || entry.label }))
+          : [];
+        setFetchedModels(models);
+        setModelLoadError(typeof data.error === 'string' ? data.error : '');
       } catch {
-        // Fallback list is good enough.
+        if (!cancelled) setModelLoadError('Could not load configured models');
       }
     })();
 
@@ -89,28 +102,29 @@ export function SpawnAgentDialog({ open, onOpenChange, onSpawn }: SpawnAgentDial
   }, [open]);
 
   const modelOptions = useMemo<InlineSelectOption[]>(() => {
-    if (fetchedModels.length > 0) {
-      return fetchedModels.map((entry) => ({
-        value: entry.id,
-        label: entry.alias || deriveAlias(entry.id),
-      }));
-    }
-    return FALLBACK_MODELS;
+    return fetchedModels.map((entry) => ({
+      value: entry.id,
+      label: entry.alias || deriveAlias(entry.id),
+    }));
   }, [fetchedModels]);
 
-  const defaultModelId = useMemo(() => {
-    if (fetchedModels.length > 0) {
-      const sonnet = fetchedModels.find((entry) => entry.id.includes('sonnet'));
-      return sonnet?.id || fetchedModels[0].id;
-    }
-    return FALLBACK_MODELS[1].value;
-  }, [fetchedModels]);
+  const visibleModelOptions = useMemo<InlineSelectOption[]>(() => {
+    if (modelOptions.length > 0) return modelOptions;
+    return [{ value: '', label: 'No configured models' }];
+  }, [modelOptions]);
+
+  const defaultModelId = useMemo(() => fetchedModels[0]?.id || '', [fetchedModels]);
 
   useEffect(() => {
-    if (!model) {
+    if (fetchedModels.length === 0) {
+      if (model !== '') setModel('');
+      return;
+    }
+
+    if (!model || !fetchedModels.some((entry) => entry.id === model)) {
       setModel(defaultModelId);
     }
-  }, [defaultModelId, model]);
+  }, [defaultModelId, fetchedModels, model]);
 
   useEffect(() => {
     if (!open) return;
@@ -136,11 +150,12 @@ export function SpawnAgentDialog({ open, onOpenChange, onSpawn }: SpawnAgentDial
     setModel(defaultModelId);
     setThinking('medium');
     setCleanup('keep');
+    setModelLoadError('');
     setSpawnError('');
   }, [currentRootKey, defaultModelId]);
 
   const handleLaunch = useCallback(async () => {
-    if (!mode || !task.trim()) return;
+    if (!mode || !task.trim() || !model.trim()) return;
     if (mode === 'root' && !agentNameInput.trim()) return;
     if (mode === 'subagent' && !parentRootKey.trim()) return;
 
@@ -193,6 +208,7 @@ export function SpawnAgentDialog({ open, onOpenChange, onSpawn }: SpawnAgentDial
   const disableLaunch = spawning
     || !mode
     || !task.trim()
+    || !model.trim()
     || (mode === 'root' && !agentNameInput.trim())
     || (mode === 'subagent' && !parentRootKey.trim());
 
@@ -467,9 +483,9 @@ export function SpawnAgentDialog({ open, onOpenChange, onSpawn }: SpawnAgentDial
                   <InlineSelect
                     value={model}
                     onChange={setModel}
-                    options={modelOptions}
+                    options={visibleModelOptions}
                     ariaLabel="Select model"
-                    disabled={spawning}
+                    disabled={spawning || modelOptions.length === 0}
                     triggerClassName="min-h-11 w-full justify-between rounded-2xl border-border/80 bg-background/65 px-3 py-2 text-sm font-sans text-foreground"
                     menuClassName="rounded-2xl border-border/80 bg-card/98 p-1 shadow-[0_20px_48px_rgba(0,0,0,0.28)]"
                     inline
@@ -490,6 +506,9 @@ export function SpawnAgentDialog({ open, onOpenChange, onSpawn }: SpawnAgentDial
                 </div>
               </div>
 
+              {modelLoadError && (
+                <p className="cockpit-note" data-tone="danger">{modelLoadError}</p>
+              )}
               {spawnError && (
                 <p className="cockpit-note" data-tone="danger">{spawnError}</p>
               )}
