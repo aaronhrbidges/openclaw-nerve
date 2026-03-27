@@ -208,6 +208,17 @@ describe('GET /api/kanban/tasks/:id', () => {
     const body = await res.json() as { error: string };
     expect(body.error).toBe('not_found');
   });
+
+  it('returns 500 when getTask throws a non-not-found error', async () => {
+    const app = await buildApp();
+    const storeModule = await import('../lib/kanban-store.js');
+    const store = storeModule.getKanbanStore();
+    vi.spyOn(store, 'getTask').mockRejectedValueOnce(new Error('boom'));
+
+    const res = await app.request('/api/kanban/tasks/exploded');
+    expect(res.status).toBe(500);
+    expect(await res.text()).toContain('Internal Server Error');
+  });
 });
 
 // ── POST /api/kanban/tasks ───────────────────────────────────────────

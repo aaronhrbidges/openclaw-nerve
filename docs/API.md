@@ -1506,6 +1506,20 @@ List tasks with optional filters and pagination.
 
 Tasks are sorted by status order → column order → most recently updated.
 
+### `GET /api/kanban/tasks/:id`
+
+Fetch a single task by ID.
+
+**Rate Limit:** General (60/min)
+
+**Response:** The matching `KanbanTask` object.
+
+**Errors:**
+
+| Status | Body | Condition |
+|--------|------|-----------|
+| 404 | `{ "error": "not_found" }` | Task not found |
+
 ### `POST /api/kanban/tasks`
 
 Create a new task.

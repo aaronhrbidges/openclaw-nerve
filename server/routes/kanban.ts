@@ -3,6 +3,7 @@
  *
  * GET    /api/kanban/tasks          — List tasks (with filters + pagination)
  * POST   /api/kanban/tasks          — Create a task
+ * GET    /api/kanban/tasks/:id      — Get a task by id
  * PATCH  /api/kanban/tasks/:id      — Update a task (CAS versioned)
  * DELETE /api/kanban/tasks/:id      — Delete a task
  * POST   /api/kanban/tasks/:id/reorder — Reorder / move a task

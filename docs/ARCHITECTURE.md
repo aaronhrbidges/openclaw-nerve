@@ -371,7 +371,7 @@ Applied in order in `app.ts`:
 | `/api/claude-code-limits` | `routes/claude-code-limits.ts` | GET | Claude Code rate limits via PTY + CLI parsing |
 | `/api/codex-limits` | `routes/codex-limits.ts` | GET | Codex rate limits via OpenAI API with local file fallback |
 | `/api/kanban/tasks` | `routes/kanban.ts` | GET, POST | Task CRUD -- list (with filters/pagination) and create |
-| `/api/kanban/tasks/:id` | `routes/kanban.ts` | PATCH, DELETE | Update (CAS-versioned) and delete tasks |
+| `/api/kanban/tasks/:id` | `routes/kanban.ts` | GET, PATCH, DELETE | Get, update (CAS-versioned), and delete tasks |
 | `/api/kanban/tasks/:id/reorder` | `routes/kanban.ts` | POST | Reorder/move tasks across columns |
 | `/api/kanban/tasks/:id/execute` | `routes/kanban.ts` | POST | Spawn agent session for task |
 | `/api/kanban/tasks/:id/complete` | `routes/kanban.ts` | POST | Complete a running task (auto-called by poller) |
