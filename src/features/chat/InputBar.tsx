@@ -489,7 +489,7 @@ export const InputBar = forwardRef<InputBarHandle, InputBarProps>(function Input
           : (
             <>
               <span className="sm:hidden">Enter to send · Shift+Enter newline · Double Shift voice</span>
-              <span className="hidden sm:inline">Enter or ⌘Enter to send · Shift+Enter for newline · Double Left Shift for voice · Ctrl+F search</span>
+              <span className="hidden sm:inline">Enter or ⌘Enter to send · Shift+Enter for newline · Double Left Shift for voice · ⌘K commands</span>
             </>
           )}
       </div>
