@@ -1,10 +1,33 @@
-import { describe, expect, it } from 'vitest';
-import { buildModelCatalogUiError, buildSelectableModelList, type GatewayModelInfo } from './useModelEffort';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { renderHook, waitFor } from '@testing-library/react';
+
+const { mockUseGateway, mockUseSessionContext } = vi.hoisted(() => ({
+  mockUseGateway: vi.fn(),
+  mockUseSessionContext: vi.fn(),
+}));
+
+vi.mock('@/contexts/GatewayContext', () => ({
+  useGateway: () => mockUseGateway(),
+}));
+
+vi.mock('@/contexts/SessionContext', () => ({
+  useSessionContext: () => mockUseSessionContext(),
+}));
+
+import { buildModelCatalogUiError, buildSelectableModelList, type GatewayModelInfo, useModelEffort } from './useModelEffort';
 
 const CONFIGURED_MODELS: GatewayModelInfo[] = [
   { id: 'zai/glm-4.7', label: 'glm-4.7', provider: 'zai' },
   { id: 'ollama/qwen2.5:7b-instruct-q5_K_M', label: 'qwen-local', provider: 'ollama' },
 ];
+
+function jsonResponse(data: unknown, init: { ok?: boolean; status?: number } = {}) {
+  return {
+    ok: init.ok ?? true,
+    status: init.status ?? 200,
+    json: async () => data,
+  };
+}
 
 describe('buildSelectableModelList', () => {
   it('returns configured models unchanged when available', () => {
@@ -28,6 +51,65 @@ describe('buildSelectableModelList', () => {
     ];
 
     expect(buildSelectableModelList(models, 'openai-codex/gpt-5.4')).toEqual(models);
+  });
+});
+
+describe('useModelEffort', () => {
+  let originalFetch: typeof globalThis.fetch;
+
+  beforeEach(() => {
+    originalFetch = globalThis.fetch;
+    localStorage.clear();
+    vi.clearAllMocks();
+
+    mockUseGateway.mockReturnValue({
+      rpc: vi.fn(),
+      connectionState: 'connected',
+      model: 'zai/glm-4.7',
+      thinking: 'medium',
+    });
+
+    mockUseSessionContext.mockReturnValue({
+      currentSession: 'agent:main:subagent:preview-run',
+      sessions: [
+        { key: 'agent:main:main', model: 'zai/glm-4.7' },
+        { key: 'agent:main:subagent:preview-run', model: 'openrouter/xiaomi/mimo-v2-pro' },
+      ],
+      updateSession: vi.fn(),
+    });
+
+    globalThis.fetch = vi.fn((input: string | URL | Request) => {
+      const url = String(input);
+      if (url === '/api/gateway/models') {
+        return Promise.resolve(jsonResponse({ models: CONFIGURED_MODELS, error: null }));
+      }
+      if (url.startsWith('/api/gateway/session-info?sessionKey=')) {
+        return Promise.resolve(jsonResponse({}));
+      }
+      throw new Error(`Unexpected fetch: ${url}`);
+    }) as typeof globalThis.fetch;
+  });
+
+  afterEach(() => {
+    globalThis.fetch = originalFetch;
+  });
+
+  it('keeps the current session model visible when the gateway context model belongs to a different session', async () => {
+    const { result } = renderHook(() => useModelEffort());
+
+    await waitFor(() => {
+      expect(result.current.selectedModel).toBe('openrouter/xiaomi/mimo-v2-pro');
+    });
+
+    await waitFor(() => {
+      expect(result.current.modelOptions.map((option) => option.value)).toContain('openrouter/xiaomi/mimo-v2-pro');
+    });
+
+    expect(result.current.modelOptions).toEqual([
+      { value: 'zai/glm-4.7', label: 'glm-4.7' },
+      { value: 'ollama/qwen2.5:7b-instruct-q5_K_M', label: 'qwen-local' },
+      { value: 'openrouter/xiaomi/mimo-v2-pro', label: 'xiaomi/mimo-v2-pro' },
+    ]);
   });
 });
 

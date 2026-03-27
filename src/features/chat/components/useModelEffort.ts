@@ -140,11 +140,6 @@ export function useModelEffort(): UseModelEffortReturn {
   // Track pending confirmation timers so we can clean them up
   const confirmTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  const modelOptionsList = useMemo(
-    () => buildSelectableModelList(gatewayModels, model),
-    [gatewayModels, model],
-  );
-
   const [selectedModel, setSelectedModel] = useState<string>(model || '--');
   const [prevModelSource, setPrevModelSource] = useState<string | null>(null);
 
@@ -152,6 +147,19 @@ export function useModelEffort(): UseModelEffortReturn {
   // Keyed by session key → resolved model ID. Survives session switches so
   // we don't re-fetch when switching back to a previously visited session.
   const [resolvedSessionModels, setResolvedSessionModels] = useState<Record<string, string>>({});
+
+  const rawCurrentSessionModel = useMemo(() => {
+    const cached = resolvedSessionModels[currentSession];
+    if (cached) return cached;
+
+    const s = sessions.find(sess => getSessionKey(sess) === currentSession);
+    return s?.model || null;
+  }, [sessions, currentSession, resolvedSessionModels]);
+
+  const modelOptionsList = useMemo(
+    () => buildSelectableModelList(gatewayModels, rawCurrentSessionModel || model),
+    [gatewayModels, rawCurrentSessionModel, model],
+  );
   const [selectedEffort, setSelectedEffort] = useState<EffortLevel>(() => {
     try {
       const saved = localStorage.getItem(getEffortKey(currentSession)) as EffortLevel | null;
