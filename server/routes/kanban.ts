@@ -409,6 +409,22 @@ app.get('/api/kanban/tasks', rateLimitGeneral, async (c) => {
   return c.json(result);
 });
 
+// GET /api/kanban/tasks/:id
+app.get('/api/kanban/tasks/:id', rateLimitGeneral, async (c) => {
+  const store = getKanbanStore();
+  const id = c.req.param('id');
+
+  try {
+    const task = await store.getTask(id);
+    return c.json(task);
+  } catch (err) {
+    if (err instanceof TaskNotFoundError) {
+      return c.json({ error: 'not_found' }, 404);
+    }
+    throw err;
+  }
+});
+
 // POST /api/kanban/tasks
 app.post('/api/kanban/tasks', rateLimitGeneral, async (c) => {
   const store = getKanbanStore();
