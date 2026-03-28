@@ -13,6 +13,126 @@ export interface TreeNode {
 
 export { getSessionType } from './sessionKeys';
 
+/** True only for real top-level agent roots that belong in the AGENTS sidebar. */
+export function isAgentSidebarRootSessionKey(sessionKey: string): boolean {
+  return isTopLevelAgentSessionKey(sessionKey);
+}
+
+function buildParentMap(sessions: Session[]): Map<string, string | null> {
+  const keyMap = new Map<string, Session>();
+  for (const session of sessions) {
+    keyMap.set(getSessionKey(session), session);
+  }
+
+  const knownKeys = new Set(keyMap.keys());
+  const parentMap = new Map<string, string | null>();
+  for (const session of sessions) {
+    const sessionKey = getSessionKey(session);
+    parentMap.set(sessionKey, resolveParentSessionKey(session, knownKeys));
+  }
+
+  return parentMap;
+}
+
+function hasAgentSidebarEligibleLineage(
+  sessionKey: string,
+  parentMap: Map<string, string | null>,
+  memo: Map<string, boolean>,
+  visiting = new Set<string>(),
+): boolean {
+  if (memo.has(sessionKey)) return memo.get(sessionKey) ?? false;
+  if (visiting.has(sessionKey)) return false;
+
+  visiting.add(sessionKey);
+
+  const parentKey = parentMap.get(sessionKey) ?? null;
+  const result = parentKey === null
+    ? isAgentSidebarRootSessionKey(sessionKey)
+    : parentMap.has(parentKey) && hasAgentSidebarEligibleLineage(parentKey, parentMap, memo, visiting);
+
+  visiting.delete(sessionKey);
+  memo.set(sessionKey, result);
+  return result;
+}
+
+function filterAgentSidebarSessions(
+  sessions: Session[],
+  parentMap: Map<string, string | null>,
+): Session[] {
+  const memo = new Map<string, boolean>();
+  return sessions.filter((session) => hasAgentSidebarEligibleLineage(getSessionKey(session), parentMap, memo));
+}
+
+function buildTreeNodes(
+  renderSessions: Session[],
+  parentMap: Map<string, string | null>,
+): TreeNode[] {
+  if (renderSessions.length === 0) return [];
+
+  const childrenOf = new Map<string | null, Session[]>();
+  for (const session of renderSessions) {
+    const sessionKey = getSessionKey(session);
+    const parentKey = parentMap.get(sessionKey) ?? null;
+    const list = childrenOf.get(parentKey);
+    if (list) {
+      list.push(session);
+    } else {
+      childrenOf.set(parentKey, [session]);
+    }
+  }
+
+  const typeOrder = { main: 0, subagent: 1, cron: 2, 'cron-run': 3 };
+
+  function buildNodes(parentKey: string | null, depth: number): TreeNode[] {
+    const children = childrenOf.get(parentKey);
+    if (!children) return [];
+
+    const sorted = [...children].sort((a, b) => {
+      const keyA = getSessionKey(a);
+      const keyB = getSessionKey(b);
+
+      if (parentKey === null) {
+        if (keyA === 'agent:main:main') return -1;
+        if (keyB === 'agent:main:main') return 1;
+      }
+
+      const ta = typeOrder[getSessionType(keyA)] ?? 9;
+      const tb = typeOrder[getSessionType(keyB)] ?? 9;
+      if (ta !== tb) return ta - tb;
+
+      if (parentKey === null && isTopLevelAgentSessionKey(keyA) && isTopLevelAgentSessionKey(keyB)) {
+        const displayA = (a.displayName || a.label || keyA).toLowerCase();
+        const displayB = (b.displayName || b.label || keyB).toLowerCase();
+        return displayA.localeCompare(displayB);
+      }
+
+      if (ta === 3) {
+        const timeA = a.lastActivity ? new Date(a.lastActivity).getTime() : 0;
+        const timeB = b.lastActivity ? new Date(b.lastActivity).getTime() : 0;
+        return timeB - timeA;
+      }
+
+      const labelA = (a.displayName || a.label || keyA).toLowerCase();
+      const labelB = (b.displayName || b.label || keyB).toLowerCase();
+      return labelA.localeCompare(labelB);
+    });
+
+    return sorted.map((session) => {
+      const sessionKey = getSessionKey(session);
+      return {
+        session,
+        key: sessionKey,
+        parentId: parentKey,
+        depth,
+        children: buildNodes(sessionKey, depth + 1),
+        isExpanded: true,
+      };
+    });
+  }
+
+  return buildNodes(null, 0);
+}
+
 /**
  * Build a hierarchical tree from a flat list of sessions.
  *
@@ -23,86 +143,15 @@ export { getSessionType } from './sessionKeys';
  * Returns an array of root-level TreeNodes (usually just one).
  */
 export function buildSessionTree(sessions: Session[]): TreeNode[] {
-  if (sessions.length === 0) return [];
+  const parentMap = buildParentMap(sessions);
+  return buildTreeNodes(sessions, parentMap);
+}
 
-  // Build a map of key → session for quick lookup
-  const keyMap = new Map<string, Session>();
-  for (const s of sessions) {
-    keyMap.set(getSessionKey(s), s);
-  }
-  const knownKeys = new Set(keyMap.keys());
-
-  // Determine parent for each session
-  const parentMap = new Map<string, string | null>();
-  for (const s of sessions) {
-    const sk = getSessionKey(s);
-    parentMap.set(sk, resolveParentSessionKey(s, knownKeys));
-  }
-
-  // Group children by parent key
-  const childrenOf = new Map<string | null, Session[]>();
-  for (const s of sessions) {
-    const sk = getSessionKey(s);
-    const pid = parentMap.get(sk) ?? null;
-    const list = childrenOf.get(pid);
-    if (list) {
-      list.push(s);
-    } else {
-      childrenOf.set(pid, [s]);
-    }
-  }
-
-  // Recursive builder
-  function buildNodes(parentKey: string | null, depth: number): TreeNode[] {
-    const children = childrenOf.get(parentKey);
-    if (!children) return [];
-
-    // Sort: subagents first, then crons, then alphabetically
-    const typeOrder = { main: 0, subagent: 1, cron: 2, 'cron-run': 3 };
-    const sorted = [...children].sort((a, b) => {
-      const keyA = getSessionKey(a);
-      const keyB = getSessionKey(b);
-
-      if (parentKey === null) {
-        if (keyA === 'agent:main:main') return -1;
-        if (keyB === 'agent:main:main') return 1;
-      }
-
-      const ta = typeOrder[getSessionType(getSessionKey(a))] ?? 9;
-      const tb = typeOrder[getSessionType(getSessionKey(b))] ?? 9;
-      if (ta !== tb) return ta - tb;
-
-      if (parentKey === null && isTopLevelAgentSessionKey(keyA) && isTopLevelAgentSessionKey(keyB)) {
-        const displayA = (a.displayName || a.label || keyA).toLowerCase();
-        const displayB = (b.displayName || b.label || keyB).toLowerCase();
-        return displayA.localeCompare(displayB);
-      }
-
-      // Within cron-runs, sort by most recent first
-      if (ta === 3) {
-        const timeA = a.lastActivity ? new Date(a.lastActivity).getTime() : 0;
-        const timeB = b.lastActivity ? new Date(b.lastActivity).getTime() : 0;
-        return timeB - timeA;
-      }
-      const la = (a.displayName || a.label || keyA).toLowerCase();
-      const lb = (b.displayName || b.label || keyB).toLowerCase();
-      return la.localeCompare(lb);
-    });
-
-    return sorted.map((s) => {
-      const sk = getSessionKey(s);
-      return {
-        session: s,
-        key: sk,
-        parentId: parentKey,
-        depth,
-        children: buildNodes(sk, depth + 1),
-        isExpanded: true,
-      };
-    });
-  }
-
-  return buildNodes(null, 0);
+/** Build the AGENTS sidebar tree, limited to real agent roots and their descendants. */
+export function buildAgentSidebarTree(sessions: Session[]): TreeNode[] {
+  const parentMap = buildParentMap(sessions);
+  const eligibleSessions = filterAgentSidebarSessions(sessions, parentMap);
+  return buildTreeNodes(eligibleSessions, parentMap);
 }
 
 /** Flatten a tree into an ordered list, respecting collapsed state. */

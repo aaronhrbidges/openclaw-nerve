@@ -3,7 +3,7 @@ import type { Session } from '@/types';
 import { getSessionKey } from '@/types';
 import type { SpawnSessionOpts } from '@/contexts/SessionContext';
 import { SessionSkeletonGroup } from '@/components/skeletons';
-import { buildSessionTree, flattenTree, getSessionType } from './sessionTree';
+import { buildAgentSidebarTree, buildSessionTree, flattenTree, getSessionType } from './sessionTree';
 import { getSessionDisplayLabel, isTopLevelAgentSessionKey } from './sessionKeys';
 import { SessionNode } from './SessionNode';
 import type { GranularAgentState } from '@/types';
@@ -133,7 +133,7 @@ export function SessionList({ sessions, currentSession, busyState, agentStatus, 
   }, [sessions]);
 
   // Build tree and flatten for rendering
-  const tree = useMemo(() => buildSessionTree(sessions), [sessions]);
+  const tree = useMemo(() => buildAgentSidebarTree(sessions), [sessions]);
   const flatNodes = useMemo(() => flattenTree(tree, expandedState), [tree, expandedState]);
 
   const handleSetDeleteTarget = useCallback((key: string, label: string) => {
