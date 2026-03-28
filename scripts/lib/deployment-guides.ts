@@ -1,5 +1,12 @@
 import guides from './deployment-guides.json';
 
+export function shouldPrintDeploymentGuides(params: {
+  invokedFromInstaller: boolean;
+  defaultsMode: boolean;
+}): boolean {
+  return !(params.invokedFromInstaller && params.defaultsMode);
+}
+
 export function printDeploymentGuides(log: (line: string) => void = console.log): void {
   log('  Deployment guides:');
   for (const guide of guides) {

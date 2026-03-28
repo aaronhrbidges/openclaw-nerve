@@ -40,7 +40,7 @@ import { detectGatewayConfig, getEnvGatewayToken, chooseSetupGatewayToken, resta
 import { applyAccessPlanToConfig, buildAccessPlan, type InstallerAccessProfile } from './lib/access-plan.js';
 import { getTailscaleState, type TailscaleState } from './lib/tailscale.js';
 import { detectAgentDisplayNameDefault } from './lib/agent-name-default.js';
-import { printDeploymentGuides } from './lib/deployment-guides.js';
+import { printDeploymentGuides, shouldPrintDeploymentGuides } from './lib/deployment-guides.js';
 
 const PROJECT_ROOT = resolve(process.cwd());
 const ENV_PATH = resolve(PROJECT_ROOT, '.env');
@@ -1226,7 +1226,9 @@ async function runDefaults(existing: EnvConfig, prereqs: PrereqResult): Promise<
   installBundledSkills();
 
   printSummary(config);
-  printDeploymentGuides();
+  if (shouldPrintDeploymentGuides({ invokedFromInstaller: process.env.NERVE_INSTALLER === '1', defaultsMode: true })) {
+    printDeploymentGuides();
+  }
 
   const changes = detectNeededConfigChanges({
     allowedOrigins: config.ALLOWED_ORIGINS?.split(',').map(origin => origin.trim()).filter(Boolean),

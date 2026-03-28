@@ -1,8 +1,17 @@
 import { describe, expect, it, vi } from 'vitest';
 import guides from './deployment-guides.json';
-import { printDeploymentGuides } from './deployment-guides.js';
+import { printDeploymentGuides, shouldPrintDeploymentGuides } from './deployment-guides.js';
 
 describe('deployment guide metadata', () => {
+  it('prints in standalone setup flows', () => {
+    expect(shouldPrintDeploymentGuides({ invokedFromInstaller: false, defaultsMode: false })).toBe(true);
+    expect(shouldPrintDeploymentGuides({ invokedFromInstaller: false, defaultsMode: true })).toBe(true);
+  });
+
+  it('skips setup-side printing for installer defaults flow', () => {
+    expect(shouldPrintDeploymentGuides({ invokedFromInstaller: true, defaultsMode: true })).toBe(false);
+  });
+
   it('contains the expected public docs links and human-readable titles', () => {
     expect(guides).toEqual([
       {
