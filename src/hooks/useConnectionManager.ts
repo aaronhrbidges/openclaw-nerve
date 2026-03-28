@@ -86,11 +86,11 @@ export function useConnectionManager(): ConnectionManagerState {
 
       if (officialWsUrl) {
         setOfficialUrl(officialWsUrl);
-        // Canonicalize the managed URL path so stale localhost aliases
-        // do not keep the app in manual-connect mode.
-        if (!savedUrl || savedMatchesOfficial) {
-          setEditableUrl(officialWsUrl);
-        }
+        // Treat the server-provided gateway as the authoritative default UI target.
+        // This lets fresh installs and env-driven reconfiguration win over stale
+        // browser storage, while still avoiding an automatic reconnect to a truly
+        // different gateway unless the user explicitly confirms by connecting.
+        setEditableUrl(officialWsUrl);
       }
 
       // Only override editableToken if it's currently empty
@@ -98,7 +98,7 @@ export function useConnectionManager(): ConnectionManagerState {
         setEditableToken(defaults.token);
       }
 
-      if (isServerSideAuth && officialWsUrl && (!savedUrl || savedMatchesOfficial)) {
+      if (isServerSideAuth && officialWsUrl) {
         setEditableToken('');
       }
 

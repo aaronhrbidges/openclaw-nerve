@@ -53,7 +53,7 @@ describe('useConnectionManager', () => {
     expect(result.current.serverSideAuth).toBe(true);
   });
 
-  it('does NOT auto-connect if user has a custom saved URL', async () => {
+  it('shows the official gateway url in the UI even when a stale custom saved URL exists', async () => {
     const { loadConfig } = await import('../contexts/GatewayContext');
     vi.mocked(loadConfig).mockReturnValue({ url: 'ws://custom.host:1234/ws', token: 'saved-token' });
 
@@ -70,7 +70,29 @@ describe('useConnectionManager', () => {
     });
 
     expect(connectMock).not.toHaveBeenCalled();
-    expect(result.current.editableUrl).toBe('ws://custom.host:1234/ws');
+    expect(result.current.editableUrl).toBe('ws://default:1234/ws');
+    expect(result.current.editableToken).toBe('');
+  });
+
+  it('keeps a manually saved token when the official url changes but server-side auth is unavailable', async () => {
+    const { loadConfig } = await import('../contexts/GatewayContext');
+    vi.mocked(loadConfig).mockReturnValue({ url: 'ws://custom.host:1234/ws', token: 'saved-token' });
+
+    globalThis.fetch = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({ wsUrl: 'ws://default:1234/ws', serverSideAuth: false }),
+    });
+
+    const mod = await import('./useConnectionManager');
+    const { result } = renderHook(() => mod.useConnectionManager());
+
+    await waitFor(() => {
+      expect(result.current.officialUrl).toBe('ws://default:1234/ws');
+    });
+
+    expect(connectMock).not.toHaveBeenCalled();
+    expect(result.current.editableUrl).toBe('ws://default:1234/ws');
+    expect(result.current.editableToken).toBe('saved-token');
   });
 
   it('auto-connects if saved URL matches official URL but token is missing (Managed Upgrade)', async () => {
