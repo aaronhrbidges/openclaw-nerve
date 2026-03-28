@@ -157,14 +157,29 @@ GATEWAY_URL=http://127.0.0.1:18789
 GATEWAY_TOKEN=<detected-token>
 ```
 
-Then build and start:
+Then handle runtime like this:
+
+1. if the installer already configured a service manager, use that instead of starting a duplicate foreground process
+2. on Linux, check for `systemd` service management via `nerve.service`
+3. on macOS, check for `launchd` management via `~/Library/LaunchAgents/com.nerve.server.plist`
+4. if no service manager is configured, run Nerve directly with the production entrypoint
+
+Typical commands:
 
 ```bash
+# build artifacts
 npm run build
-npm run start
-```
 
-If a service manager is already configured, restart the service instead of starting a duplicate foreground process.
+# Linux, service managed
+sudo systemctl restart nerve.service
+
+# macOS, service managed
+launchctl stop com.nerve.server || true
+launchctl start com.nerve.server
+
+# no service manager present
+npm run prod
+```
 
 ## Topology branching
 
