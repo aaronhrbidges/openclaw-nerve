@@ -177,9 +177,9 @@ export function SessionList({ sessions, currentSession, busyState, agentStatus, 
         </div>
       </div>
       <div className={compact ? 'overflow-y-auto' : 'flex-1 overflow-y-auto'}>
-        {isLoading && !sessions.length ? (
+        {isLoading && flatNodes.length === 0 ? (
           <SessionSkeletonGroup count={4} />
-        ) : !sessions.length ? (
+        ) : flatNodes.length === 0 ? (
           <div className="text-muted-foreground px-3 py-2 text-[0.733rem]">No active sessions</div>
         ) : flatNodes.map((node) => {
           const sessionKey = node.key;
