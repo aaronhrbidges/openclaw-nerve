@@ -1158,7 +1158,7 @@ if [[ "$(uname -s)" == "Darwin" ]]; then
         if [[ "$(echo "$answer" | tr "[:upper:]" "[:lower:]")" != "n" ]]; then
           setup_launchd
         else
-          ok "Skipped — start manually with: npm run prod"
+          ok "Skipped — start manually with: cd ${INSTALL_DIR} && npm run prod"
         fi
       else
         info "Cannot read input — installing launchd service by default"
@@ -1196,7 +1196,7 @@ elif command -v systemctl &>/dev/null; then
         if [[ "$(echo "$answer" | tr "[:upper:]" "[:lower:]")" != "n" ]]; then
           setup_systemd
         else
-          ok "Skipped — start manually with: npm run prod"
+          ok "Skipped — start manually with: cd ${INSTALL_DIR} && npm run prod"
         fi
       else
         info "Cannot read input — installing systemd service by default"
