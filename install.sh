@@ -69,6 +69,16 @@ elif command -v dnf &>/dev/null || command -v yum &>/dev/null; then IS_FEDORA=tr
 hint() { echo -e "  ${RAIL}"; echo -e "  ${RAIL}  ${BOLD}$1${NC}"; echo -e "  ${RAIL}"; }
 cmd()  { echo -e "  ${RAIL}    ${CYAN}\$ $1${NC}"; }
 
+print_deployment_guides() {
+  node - <<'EOF'
+const fs = require('node:fs');
+const guides = JSON.parse(fs.readFileSync('./scripts/lib/deployment-guides.json', 'utf8'));
+for (const guide of guides) {
+  console.log(`     ${guide.title}: ${guide.url}`);
+}
+EOF
+}
+
 # Check if a port is already in use. Returns 0 if port is free, 1 if occupied.
 check_port() {
   local port="$1"
@@ -1222,6 +1232,9 @@ else
   echo -e "     ${ORANGE}│${NC}  ${CYAN}${BOLD}→ ${local_url}${NC}$(printf ' %.0s' $(seq 1 $((box_inner - url_len - 4))))${ORANGE}│${NC}"
   echo -e "     ${ORANGE}│${NC}$(printf ' %.0s' $(seq 1 $box_inner))${ORANGE}│${NC}"
   echo -e "     ${ORANGE}╰$(printf '─%.0s' $(seq 1 $box_inner))╯${NC}"
+  echo ""
+  echo "     Deployment guides:"
+  print_deployment_guides
   echo ""
   echo -e "     ${DIM}Directory:  cd ${INSTALL_DIR}${NC}"
   if $IS_MAC; then
