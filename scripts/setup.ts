@@ -40,6 +40,7 @@ import { detectGatewayConfig, getEnvGatewayToken, chooseSetupGatewayToken, resta
 import { applyAccessPlanToConfig, buildAccessPlan, type InstallerAccessProfile } from './lib/access-plan.js';
 import { getTailscaleState, type TailscaleState } from './lib/tailscale.js';
 import { detectAgentDisplayNameDefault } from './lib/agent-name-default.js';
+import deploymentGuides from './lib/deployment-guides.json';
 
 const PROJECT_ROOT = resolve(process.cwd());
 const ENV_PATH = resolve(PROJECT_ROOT, '.env');
@@ -316,6 +317,7 @@ async function main(): Promise<void> {
   // When invoked from install.sh, build is already done — skip misleading "next steps"
   if (!process.env.NERVE_INSTALLER) {
     printNextSteps(config);
+    printDeploymentGuides();
   }
 }
 
@@ -1006,6 +1008,14 @@ function printNextSteps(config: EnvConfig): void {
   console.log('');
 }
 
+function printDeploymentGuides(): void {
+  console.log('  Deployment guides:');
+  for (const guide of deploymentGuides) {
+    console.log(`    ${guide.title}: \x1b[36m${guide.url}\x1b[0m`);
+  }
+  console.log('');
+}
+
 // ── --check mode ─────────────────────────────────────────────────────
 
 async function runCheck(config: EnvConfig): Promise<void> {
@@ -1224,6 +1234,7 @@ async function runDefaults(existing: EnvConfig, prereqs: PrereqResult): Promise<
   installBundledSkills();
 
   printSummary(config);
+  printDeploymentGuides();
 
   const changes = detectNeededConfigChanges({
     allowedOrigins: config.ALLOWED_ORIGINS?.split(',').map(origin => origin.trim()).filter(Boolean),
