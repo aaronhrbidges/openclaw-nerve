@@ -14,6 +14,11 @@ Use this folder as the docs hub for Nerve.
 - [Agent Markers](./AGENT-MARKERS.md)
 - [Code Review](./CODE_REVIEW.md)
 
+## Agent-Driven Setup
+
+- [AI Agent Setup](./AI_SETUP.md)
+- [Nerve Agent Install Contract](./INSTALL.md)
+
 ## Deployment Guides
 
 - [Run everything on one machine](./DEPLOYMENT-A.md)

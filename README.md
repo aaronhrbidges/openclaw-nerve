@@ -174,6 +174,8 @@ For the full threat model and hardening details, see **[docs/SECURITY.md](docs/S
 - **[Architecture](docs/ARCHITECTURE.md)** — codebase structure and system design
 - **[Configuration](docs/CONFIGURATION.md)** — `.env` variables and setup behavior
 - **[Deployment Guides](docs/README.md)** — local, hybrid, and cloud setups
+- **[AI Agent Setup](docs/AI_SETUP.md)** — human guide for agent-driven install, repair, and validation
+- **[Agent Install Contract](docs/INSTALL.md)** — raw operational contract for coding agents and CLI installers
 - **[Agent Markers](docs/AGENT-MARKERS.md)** — TTS, charts, kanban markers, and rich UI output
 - **[Troubleshooting](docs/TROUBLESHOOTING.md)** — common issues and fixes
 - **[Tailscale Guide](docs/TAILSCALE.md)** — private remote access via tailnet IP or Tailscale Serve
