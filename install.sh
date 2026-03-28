@@ -71,6 +71,41 @@ elif command -v dnf &>/dev/null || command -v yum &>/dev/null; then IS_FEDORA=tr
 hint() { echo -e "  ${RAIL}"; echo -e "  ${RAIL}  ${BOLD}$1${NC}"; echo -e "  ${RAIL}"; }
 cmd()  { echo -e "  ${RAIL}    ${CYAN}\$ $1${NC}"; }
 
+print_deployment_guides() {
+  local guides_file="${INSTALL_DIR}/scripts/lib/deployment-guides.json"
+  local rendered_guides
+
+  [[ -r "$guides_file" ]] || return 1
+
+  rendered_guides="$(node - "$guides_file" <<'EOF'
+const fs = require('node:fs');
+
+const guidesPath = process.argv[2];
+
+try {
+  const guides = JSON.parse(fs.readFileSync(guidesPath, 'utf8'));
+  if (!Array.isArray(guides)) process.exit(0);
+
+  const rendered = [];
+  for (const guide of guides) {
+    if (guide && typeof guide.title === 'string' && typeof guide.url === 'string') {
+      rendered.push(`     ${guide.title}: ${guide.url}`);
+    }
+  }
+
+  process.stdout.write(rendered.join('\n'));
+} catch {
+  process.exit(0);
+}
+EOF
+)" || return 1
+
+  [[ -n "$rendered_guides" ]] || return 1
+
+  echo "     Deployment guides:"
+  printf '%s\n' "$rendered_guides"
+}
+
 # Check if a port is already in use. Returns 0 if port is free, 1 if occupied.
 check_port() {
   local port="$1"
@@ -1255,6 +1290,8 @@ else
   echo -e "     ${ORANGE}│${NC}  ${CYAN}${BOLD}→ ${local_url}${NC}$(printf ' %.0s' $(seq 1 $((box_inner - url_len - 4))))${ORANGE}│${NC}"
   echo -e "     ${ORANGE}│${NC}$(printf ' %.0s' $(seq 1 $box_inner))${ORANGE}│${NC}"
   echo -e "     ${ORANGE}╰$(printf '─%.0s' $(seq 1 $box_inner))╯${NC}"
+  echo ""
+  print_deployment_guides || true
   echo ""
   echo -e "     ${DIM}Directory:  cd ${INSTALL_DIR}${NC}"
   if $IS_MAC; then
