@@ -40,7 +40,7 @@ import { detectGatewayConfig, getEnvGatewayToken, chooseSetupGatewayToken, resta
 import { applyAccessPlanToConfig, buildAccessPlan, type InstallerAccessProfile } from './lib/access-plan.js';
 import { getTailscaleState, type TailscaleState } from './lib/tailscale.js';
 import { detectAgentDisplayNameDefault } from './lib/agent-name-default.js';
-import deploymentGuides from './lib/deployment-guides.json';
+import { printDeploymentGuides } from './lib/deployment-guides.js';
 
 const PROJECT_ROOT = resolve(process.cwd());
 const ENV_PATH = resolve(PROJECT_ROOT, '.env');
@@ -1005,14 +1005,6 @@ function printNextSteps(config: EnvConfig): void {
   console.log(`    Production:    \x1b[36mnpm run prod\x1b[0m`);
   console.log('');
   console.log(`  Open \x1b[36mhttp://localhost:${port}\x1b[0m in your browser.`);
-  console.log('');
-}
-
-function printDeploymentGuides(): void {
-  console.log('  Deployment guides:');
-  for (const guide of deploymentGuides) {
-    console.log(`    ${guide.title}: \x1b[36m${guide.url}\x1b[0m`);
-  }
   console.log('');
 }
 
