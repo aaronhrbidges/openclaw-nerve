@@ -55,6 +55,7 @@ Supported flags:
 - `--skip-setup`
 - `--dry-run`
 - `--gateway-token <token>`
+- `--gateway-url <url>`
 - `--access-mode <mode>`
 - `--help`
 
@@ -195,9 +196,11 @@ This stage controls `.env` provisioning and setup wizard behavior.
 When called (and `.env` doesn’t already exist), it:
 
 1. Reads gateway token (`--gateway-token` first, then auto-detect)
-2. Reads gateway port from `openclaw.json` (fallback 18789)
+2. Resolves gateway URL:
+   - `--gateway-url <url>` first (validated as absolute `http://` or `https://` URL)
+   - otherwise local gateway from `openclaw.json` port (fallback `http://127.0.0.1:18789`)
 3. Writes minimal `.env`:
-   - `GATEWAY_URL=http://127.0.0.1:<port>`
+   - `GATEWAY_URL=<resolved-url>`
    - `GATEWAY_TOKEN=<token>`
    - `PORT=3080`
 
@@ -218,6 +221,7 @@ If token exists but port `3080` is already occupied:
 #### `--skip-setup`
 - If `.env` exists: keep it.
 - If no `.env`: auto-generate from gateway config.
+- When combined with `--gateway-url <url>`, the generated `.env` uses that URL instead of the local default.
 
 #### Interactive mode (no `--skip-setup`)
 - If `.env` exists:

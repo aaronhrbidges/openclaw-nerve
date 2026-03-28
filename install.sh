@@ -8,6 +8,7 @@
 # Or with options:
 #   curl -fsSL ... | bash -s -- --dir ~/nerve --version v1.4.4
 #   curl -fsSL ... | bash -s -- --dir ~/nerve --branch main
+#   curl -fsSL ... | bash -s -- --gateway-url https://gw.example.com --gateway-token <token> --skip-setup
 # ──────────────────────────────────────────────────────────────────────
 set -euo pipefail
 
@@ -37,6 +38,7 @@ NODE_MIN=22
 SKIP_SETUP=false
 DRY_RUN=false
 GATEWAY_TOKEN=""
+GATEWAY_URL_OVERRIDE=""
 ACCESS_MODE=""
 ENV_MISSING=false
 
@@ -228,6 +230,7 @@ while [[ $# -gt 0 ]]; do
     --skip-setup) SKIP_SETUP=true; shift ;;
     --dry-run)    DRY_RUN=true; shift ;;
     --gateway-token) [[ $# -ge 2 ]] || { echo "Missing value for --gateway-token"; exit 1; }; GATEWAY_TOKEN="$2"; shift 2 ;;
+    --gateway-url) [[ $# -ge 2 ]] || { echo "Missing value for --gateway-url"; exit 1; }; GATEWAY_URL_OVERRIDE="$2"; shift 2 ;;
     --access-mode) [[ $# -ge 2 ]] || { echo "Missing value for --access-mode"; exit 1; }; ACCESS_MODE="$2"; shift 2 ;;
     --help|-h)
       echo "Nerve Installer"
@@ -239,6 +242,7 @@ while [[ $# -gt 0 ]]; do
       echo "  --repo <url>         Git repo URL"
       echo "  --skip-setup         Skip the interactive setup wizard"
       echo "  --gateway-token <t>  Gateway token (for non-interactive installs)"
+      echo "  --gateway-url <url>  Gateway URL (for remote/non-interactive installs)"
       echo "  --access-mode <m>    Setup access mode: local|network|custom|tailscale-ip|tailscale-serve"
       echo "  --dry-run            Simulate the install without changing anything"
       echo "  --help               Show this help"
@@ -266,7 +270,28 @@ normalize_access_mode() {
   esac
 }
 
+normalize_gateway_url() {
+  local url="$1"
+
+  if command -v node &>/dev/null; then
+    node -e 'const input=process.argv[1];try{const u=new URL(input);if(!["http:","https:"].includes(u.protocol))throw new Error("protocol");if(u.search||u.hash)throw new Error("query-or-fragment");process.stdout.write(u.toString().replace(/\/+$/,""));}catch{process.exit(1)}' "$url" 2>/dev/null || return 1
+  else
+    [[ "$url" =~ ^https?://[^[:space:]?#]+$ ]] || return 1
+    printf '%s' "${url%/}"
+  fi
+}
+
 ACCESS_MODE=$(normalize_access_mode "$ACCESS_MODE")
+
+if [[ -n "$GATEWAY_URL_OVERRIDE" ]]; then
+  normalized_gateway_url=$(normalize_gateway_url "$GATEWAY_URL_OVERRIDE" || true)
+  if [[ -z "$normalized_gateway_url" ]]; then
+    fail "Invalid --gateway-url: $GATEWAY_URL_OVERRIDE"
+    echo "  Expected an absolute http:// or https:// URL without query or fragment"
+    exit 1
+  fi
+  GATEWAY_URL_OVERRIDE="$normalized_gateway_url"
+fi
 
 # ── Detect interactive mode ───────────────────────────────────────────
 # When piped via curl | bash, stdin is the pipe — but /dev/tty still
@@ -499,11 +524,11 @@ check_build_tools() {
 
 # ── Check: Gateway reachable ──────────────────────────────────────────
 check_gateway() {
-  local gw_url="http://127.0.0.1:18789"
+  local gw_url="${GATEWAY_URL_OVERRIDE:-http://127.0.0.1:18789}"
 
-  # Try to read from openclaw.json
+  # Try to read from openclaw.json when no explicit gateway URL was provided
   local config_file="${HOME}/.openclaw/openclaw.json"
-  if [[ -f "$config_file" ]]; then
+  if [[ -z "$GATEWAY_URL_OVERRIDE" && -f "$config_file" ]]; then
     local port
     port=$(node -e "try{const c=JSON.parse(require('fs').readFileSync('$config_file','utf8'));console.log(c.gateway?.port??18789)}catch{console.log(18789)}" 2>/dev/null || echo "18789")
     gw_url="http://127.0.0.1:${port}"
@@ -804,6 +829,7 @@ generate_env_from_gateway() {
   fi
 
   local gw_token="${GATEWAY_TOKEN:-}"
+  local gw_url="${GATEWAY_URL_OVERRIDE:-}"
   local gw_port="18789"
   local config_file="${HOME}/.openclaw/openclaw.json"
 
@@ -811,8 +837,12 @@ generate_env_from_gateway() {
   if [[ -z "$gw_token" ]]; then
     gw_token=$(detect_gateway_token)
   fi
-  if [[ -f "$config_file" ]]; then
+  if [[ -z "$gw_url" && -f "$config_file" ]]; then
     gw_port=$(node -e "try{const c=JSON.parse(require('fs').readFileSync('$config_file','utf8'));console.log(c.gateway?.port??18789)}catch{console.log(18789)}" 2>/dev/null || echo "18789")
+    gw_url="http://127.0.0.1:${gw_port}"
+  fi
+  if [[ -z "$gw_url" ]]; then
+    gw_url="http://127.0.0.1:${gw_port}"
   fi
 
   if [[ -n "$gw_token" ]]; then
@@ -841,7 +871,7 @@ generate_env_from_gateway() {
       fi
     fi
     cat > .env <<ENVEOF
-GATEWAY_URL=http://127.0.0.1:${gw_port}
+GATEWAY_URL=${gw_url}
 GATEWAY_TOKEN=${gw_token}
 PORT=${nerve_port}
 ENVEOF
@@ -864,6 +894,9 @@ if [[ "$DRY_RUN" == "true" ]]; then
   else
     dry "Would launch interactive setup wizard"
     dry "Would prompt for: gateway token, port, TTS config"
+  fi
+  if [[ -n "$GATEWAY_URL_OVERRIDE" ]]; then
+    dry "Would write GATEWAY_URL=${GATEWAY_URL_OVERRIDE}"
   fi
 else
   if [[ "$SKIP_SETUP" == "true" ]]; then

@@ -114,6 +114,13 @@ GATEWAY_TOKEN=your-token-here
 GATEWAY_URL=http://127.0.0.1:18789
 ```
 
+For non-interactive installs that should talk to a remote gateway, pass the URL directly to the installer:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/daggerhashimoto/openclaw-nerve/master/install.sh \
+  | bash -s -- --gateway-url https://gw.example.com --gateway-token <token> --skip-setup
+```
+
 ### Token Injection
 
 Nerve performs **server-side token injection**. When a connection is established through the WebSocket proxy, Nerve automatically injects the configured `GATEWAY_TOKEN` into the connection request if the client is considered **trusted**.

@@ -72,6 +72,13 @@ Nerve auto-detects certificates at `certs/cert.pem` and `certs/key.pem`.
 
 Follow the same-host steps for Nerve, then add:
 
+### Install with remote gateway settings up front
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/daggerhashimoto/openclaw-nerve/master/install.sh \
+  | bash -s -- --gateway-url https://gw.example.com --gateway-token <token> --skip-setup
+```
+
 ### Point Nerve to remote gateway
 
 In `.env`:
