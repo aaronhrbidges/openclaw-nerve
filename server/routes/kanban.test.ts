@@ -151,16 +151,6 @@ async function overwriteStoredTaskAssignee(taskId: string, assignee?: string | n
   await fs.promises.writeFile(storePath, `${JSON.stringify(raw, null, 2)}\n`);
 }
 
-async function waitForCondition(predicate: () => boolean, timeoutMs = 250, intervalMs = 10): Promise<void> {
-  const deadline = Date.now() + timeoutMs;
-  while (Date.now() < deadline) {
-    if (predicate()) return;
-    await new Promise((resolve) => setTimeout(resolve, intervalMs));
-  }
-
-  expect(predicate()).toBe(true);
-}
-
 // ── GET /api/kanban/tasks ────────────────────────────────────────────
 
 describe('GET /api/kanban/tasks', () => {
