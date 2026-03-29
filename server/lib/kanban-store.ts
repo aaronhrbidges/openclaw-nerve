@@ -708,6 +708,7 @@ export class KanbanStore {
         throw new InvalidTaskStatusError(patch.status, getAllowedTaskStatuses(data.config));
       }
 
+      // Apply patch
       const normalizedPatch = { ...patch };
       if (Object.prototype.hasOwnProperty.call(patch, 'assignee')) {
         normalizedPatch.assignee = patch.assignee == null
@@ -1247,6 +1248,7 @@ export class KanbanStore {
     return this.withStore(async () => {
       const data = await this.readRaw();
       const now = Date.now();
+
       const payload = canonicalizeProposalPayloadAssignee(input.payload);
 
       if ('status' in payload && typeof payload.status === 'string' && !isAllowedTaskStatus(payload.status, data.config)) {

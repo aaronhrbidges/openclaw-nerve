@@ -45,9 +45,9 @@ import type {
 const app = new Hono();
 
 const POLL_SESSIONS_ACTIVE_MINUTES = 24 * 60;
-const POLL_SESSIONS_LIMIT = 200;
 const PARENT_ROOT_LOOKUP_ACTIVE_MINUTES = 7 * 24 * 60;
 const PARENT_ROOT_LOOKUP_SESSIONS_LIMIT = 1000;
+const POLL_SESSIONS_LIMIT = 200;
 
 // ── Session completion poller ────────────────────────────────────────
 
@@ -157,6 +157,12 @@ class KanbanExecutionPreflightError extends Error {
   }
 }
 
+/**
+ * Intentional platform compromise:
+ * - Linux keeps the original master/session-spawn path as primary because it already works there.
+ * - macOS defaults to the assignee-root fallback path because the primary subagent spawn flow is known to fail there.
+ * Tests can override this with NERVE_KANBAN_EXECUTION_MODE.
+ */
 function shouldUseKanbanFallback(): boolean {
   const mode = process.env.NERVE_KANBAN_EXECUTION_MODE;
   if (mode === 'primary') return false;
@@ -233,7 +239,6 @@ function pollSessionCompletion(
     }
 
     try {
-      // Stop stale pollers once the task leaves this active run.
       const task = await store.getTask(taskId).catch(() => null);
       if (
         !task
@@ -241,21 +246,17 @@ function pollSessionCompletion(
         || task.run?.status !== 'running'
         || task.run?.sessionKey !== identity.correlationKey
       ) {
-        return; // task was moved, aborted, or rerun under a newer session key
+        return;
       }
 
       const raw = await invokeGatewayTool('subagents', { action: 'list', recentMinutes: 120 });
       const parsed = parseGatewayResponse(raw);
-
-      // subagents list returns { active: [...], recent: [...] }
       const active = (parsed.active ?? []) as Array<Record<string, unknown>>;
       const recent = (parsed.recent ?? []) as Array<Record<string, unknown>>;
       const all = [...active, ...recent];
 
       const match = findGatewayRunMatch(all, identity);
-
       if (!match) {
-        // Not found yet -- may not have registered, keep trying
         trackTimeout(poll, intervalMs);
         return;
       }
@@ -270,7 +271,6 @@ function pollSessionCompletion(
             : identity.childSessionKey;
 
       if (status === 'done') {
-        // Fetch session history to get the result text
         let resultText = 'Completed (no result text)';
         if (!childSessionKey) {
           console.warn(`[kanban] Run ${identity.correlationKey} completed without a child session key`);
@@ -329,23 +329,17 @@ function pollSessionCompletion(
         return;
       }
 
-      if (status === 'running') {
-        trackTimeout(poll, intervalMs);
-        return;
-      }
-
-      // Unknown status -- keep polling
       trackTimeout(poll, intervalMs);
     } catch (err) {
       console.error(`[kanban] Poll error for task ${taskId}:`, err);
-      trackTimeout(poll, intervalMs); // retry on transient errors
+      trackTimeout(poll, intervalMs);
     }
   };
 
-  // Start after a brief delay to let the session register
   trackTimeout(poll, 3_000);
 }
 
+/** Poll spawned macOS fallback child session until the task finishes. */
 function pollFallbackSessionCompletion(
   store: ReturnType<typeof getKanbanStore>,
   taskId: string,
@@ -1094,7 +1088,13 @@ app.post('/api/kanban/tasks/:id/execute', rateLimitGeneral, async (c) => {
         const label = `kb-${titleSlug}-${existing.id}-v${existing.version + 1}-${Date.now()}`;
         const sessionKey = buildKanbanFallbackRunKey(label);
         const taskDescription = existing.description || existing.title;
-        const prompt = `You are working on a Kanban task.\n\nTitle: ${existing.title}\n\nDescription: ${taskDescription}\n\nDeliver your result as a clear summary of what was done.`;
+        const prompt = `You are working on a Kanban task.
+
+Title: ${existing.title}
+
+Description: ${taskDescription}
+
+Deliver your result as a clear summary of what was done.`;
 
         const task = await store.executeTask(
           id,
@@ -1140,7 +1140,13 @@ app.post('/api/kanban/tasks/:id/execute', rateLimitGeneral, async (c) => {
         task,
         primarySpawn: {
           runSessionKey,
-          prompt: `You are working on a Kanban task.\n\nTitle: ${task.title}\n\nDescription: ${taskDescription}\n\nDeliver your result as a clear summary of what was done.`,
+          prompt: `You are working on a Kanban task.
+
+Title: ${task.title}
+
+Description: ${taskDescription}
+
+Deliver your result as a clear summary of what was done.`,
           model,
           thinking,
         },

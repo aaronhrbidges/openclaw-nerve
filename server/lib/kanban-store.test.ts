@@ -704,7 +704,7 @@ describe('canonical run session key', () => {
   it('accepts a precomputed run correlation key in executeTask', async () => {
     const task = await createSampleTask({ status: 'todo' });
     const rootSessionKey = 'kanban-root:test-task';
-
+    
     const executed = await store.executeTask(task.id, { sessionKey: rootSessionKey });
 
     expect(executed.status).toBe('in-progress');
@@ -719,9 +719,11 @@ describe('canonical run session key', () => {
     const rootSessionKey1 = 'kanban-root:run-1';
     const rootSessionKey2 = 'kanban-root:run-2';
 
+    // First run
     const run1 = await store.executeTask(task.id, { sessionKey: rootSessionKey1 });
     expect(run1.run!.sessionKey).toBe(rootSessionKey1);
 
+    // Abort and re-execute with new root session key
     const aborted = await store.abortTask(run1.id);
     expect(aborted.run!.status).toBe('aborted');
 
@@ -729,10 +731,12 @@ describe('canonical run session key', () => {
     expect(run2.run!.sessionKey).toBe(rootSessionKey2);
     expect(run2.run!.status).toBe('running');
 
+    // Stale run completion with old session key should fail
     await expect(
-      store.completeRun(run2.id, rootSessionKey1, 'stale result'),
+      store.completeRun(run2.id, rootSessionKey1, 'stale result')
     ).rejects.toThrow(InvalidTransitionError);
 
+    // Verify active run is still intact
     const current = await store.getTask(task.id);
     expect(current.run?.status).toBe('running');
     expect(current.run?.sessionKey).toBe(rootSessionKey2);
@@ -741,7 +745,7 @@ describe('canonical run session key', () => {
 
   it('still generates auto keys when no custom session key is provided', async () => {
     const task = await createSampleTask({ status: 'todo' });
-
+    
     const executed = await store.executeTask(task.id);
 
     expect(executed.run!.sessionKey).toMatch(new RegExp(`^kb-${task.id}-\\d+`));
