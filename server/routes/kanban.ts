@@ -47,6 +47,7 @@ const app = new Hono();
 const POLL_SESSIONS_ACTIVE_MINUTES = 24 * 60;
 const POLL_SESSIONS_LIMIT = 200;
 const PARENT_ROOT_LOOKUP_ACTIVE_MINUTES = 7 * 24 * 60;
+const PARENT_ROOT_LOOKUP_SESSIONS_LIMIT = 1000;
 
 // ── Session completion poller ────────────────────────────────────────
 
@@ -81,8 +82,7 @@ function trackTimeout(fn: () => void, ms: number): ReturnType<typeof setTimeout>
 }
 
 function trackBackgroundTask<T>(task: Promise<T>): Promise<T> {
-  let tracked: Promise<unknown>;
-  tracked = task.finally(() => {
+  const tracked = task.finally(() => {
     activeBackgroundTasks.delete(tracked);
   });
   activeBackgroundTasks.add(tracked);
@@ -411,7 +411,7 @@ function pollFallbackSessionCompletion(
       const status = session.status;
       if (status === 'error' || status === 'failed') {
         const errorMsg = session.error || 'Session failed';
-        await store.completeRun(taskId, activeSessionKey, undefined, errorMsg).catch(() => {});
+        await store.completeRun(taskId, identity.correlationKey, undefined, errorMsg).catch(() => {});
         return;
       }
 
@@ -446,7 +446,7 @@ function pollFallbackSessionCompletion(
         const markers = parseKanbanMarkers(resultText);
         const cleanResult = markers.length > 0 ? stripKanbanMarkers(resultText) : resultText;
 
-        const completedTask = await store.completeRun(taskId, activeSessionKey, cleanResult).catch((err) => {
+        const completedTask = await store.completeRun(taskId, identity.correlationKey, cleanResult).catch((err) => {
           console.error(`[kanban] Failed to complete run for task ${taskId}:`, err);
           return null;
         });
@@ -1078,7 +1078,7 @@ app.post('/api/kanban/tasks/:id/execute', rateLimitGeneral, async (c) => {
       if (assignedParentSessionKey) {
         const sessionsResponse = await gatewayRpcCall('sessions.list', {
           activeMinutes: PARENT_ROOT_LOOKUP_ACTIVE_MINUTES,
-          limit: POLL_SESSIONS_LIMIT,
+          limit: PARENT_ROOT_LOOKUP_SESSIONS_LIMIT,
         }) as { sessions?: GatewaySessionSummary[] };
         const sessions = Array.isArray(sessionsResponse.sessions) ? sessionsResponse.sessions : [];
         if (!sessions.some((session) => getSessionKey(session) === assignedParentSessionKey)) {
@@ -1086,10 +1086,10 @@ app.post('/api/kanban/tasks/:id/execute', rateLimitGeneral, async (c) => {
         }
 
         const config = await store.getConfig();
-        const model = existing.model || parsed.data.model || config.defaultModel;
-        const thinking = existing.thinking || parsed.data.thinking || config.defaultThinking;
-        const persistedModel = existing.model || parsed.data.model;
-        const persistedThinking = existing.thinking || parsed.data.thinking;
+        const model = parsed.data.model || existing.model || config.defaultModel;
+        const thinking = parsed.data.thinking || existing.thinking || config.defaultThinking;
+        const persistedModel = parsed.data.model || existing.model;
+        const persistedThinking = parsed.data.thinking || existing.thinking;
         const titleSlug = existing.title.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 40) || 'task';
         const label = `kb-${titleSlug}-${existing.id}-v${existing.version + 1}-${Date.now()}`;
         const sessionKey = buildKanbanFallbackRunKey(label);

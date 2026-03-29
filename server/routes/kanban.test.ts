@@ -121,6 +121,16 @@ async function overwriteStoredTaskAssignee(taskId: string, assignee?: string | n
   await fs.promises.writeFile(storePath, `${JSON.stringify(raw, null, 2)}\n`);
 }
 
+async function waitForCondition(predicate: () => boolean, timeoutMs = 250, intervalMs = 10): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if (predicate()) return;
+    await new Promise((resolve) => setTimeout(resolve, intervalMs));
+  }
+
+  expect(predicate()).toBe(true);
+}
+
 // ── GET /api/kanban/tasks ────────────────────────────────────────────
 
 describe('GET /api/kanban/tasks', () => {
@@ -749,12 +759,16 @@ describe('POST /api/kanban/tasks/:id/execute', () => {
     expect(body.status).toBe('in-progress');
     expect(body.run?.sessionKey).toMatch(/^kanban-root:/);
 
-    await new Promise((resolve) => setTimeout(resolve, 25));
+    await waitForCondition(() => gatewayRpcCalls.some((call) => call.method === 'chat.send'));
 
     expect(invokeGatewayToolMock).not.toHaveBeenCalledWith('sessions_spawn', expect.anything());
-    expect(gatewayRpcCalls.some((call) => (
-      call.method === 'sessions.list' && call.params?.activeMinutes === 7 * 24 * 60
-    ))).toBe(true);
+    expect(gatewayRpcCalls).toContainEqual({
+      method: 'sessions.list',
+      params: {
+        activeMinutes: 7 * 24 * 60,
+        limit: 1000,
+      },
+    });
     const chatSendCall = gatewayRpcCalls.find((call) => call.method === 'chat.send');
     expect(chatSendCall?.params?.sessionKey).toBe('agent:reviewer:main');
   });
@@ -779,10 +793,48 @@ describe('POST /api/kanban/tasks/:id/execute', () => {
     const res = await app.request(`/api/kanban/tasks/${task.id}/execute`, json({}));
     expect(res.status).toBe(200);
 
-    await new Promise((resolve) => setTimeout(resolve, 25));
+    await waitForCondition(() => gatewayRpcCalls.some((call) => call.method === 'chat.send'));
 
     const chatSendCall = gatewayRpcCalls.find((call) => call.method === 'chat.send');
     expect(chatSendCall?.params?.sessionKey).toBe('agent:reviewer:main');
+  });
+
+  it('prefers execute-time overrides over stored task settings for assigned runs', async () => {
+    const gatewayRpcCalls: Array<{ method: string; params?: Record<string, unknown> }> = [];
+    const gatewayRpcMock: GatewayRpcMock = vi.fn(async (method, params) => {
+      gatewayRpcCalls.push({ method, params });
+      if (method === 'sessions.list') {
+        return { sessions: [{ sessionKey: 'agent:reviewer:main' }] };
+      }
+      if (method === 'chat.send') {
+        return { runId: 'run-assigned-override' };
+      }
+      return {};
+    });
+
+    const app = await buildApp({ gatewayRpcMock, executionMode: 'primary' });
+    const task = await createTask(app, {
+      status: 'todo',
+      assignee: 'agent:reviewer',
+      model: 'stored-model',
+      thinking: 'low',
+    });
+
+    const res = await app.request(`/api/kanban/tasks/${task.id}/execute`, json({
+      model: 'override-model',
+      thinking: 'high',
+    }));
+    expect(res.status).toBe(200);
+    const body = await res.json() as KanbanTask;
+    expect(body.model).toBe('override-model');
+    expect(body.thinking).toBe('high');
+
+    await waitForCondition(() => gatewayRpcCalls.some((call) => call.method === 'chat.send'));
+
+    const chatSendCall = gatewayRpcCalls.find((call) => call.method === 'chat.send');
+    const message = String(chatSendCall?.params?.message ?? '');
+    expect(message).toContain('model: override-model');
+    expect(message).toContain('thinking: high');
   });
 
   it('treats legacy agent:main assignees as unassigned on the normal path', async () => {

@@ -51,7 +51,7 @@ describe('launchKanbanFallbackSubagentViaRpc', () => {
     expect(calls[1].method).toBe('chat.send');
   });
 
-  it('uses a 1-week lookup window when validating parent root existence', async () => {
+  it('uses a 1-week lookup window and full session inventory when validating parent root existence', async () => {
     await launchKanbanFallbackSubagentViaRpc({
       label: 'test-kanban-run',
       task: 'Execute kanban task',
@@ -59,6 +59,7 @@ describe('launchKanbanFallbackSubagentViaRpc', () => {
     });
 
     expect(calls[0].params.activeMinutes).toBe(7 * 24 * 60);
+    expect(calls[0].params.limit).toBe(1000);
   });
 
   it('aborts before chat.send when parent root session is missing', async () => {

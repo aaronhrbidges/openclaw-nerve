@@ -16,7 +16,7 @@ import { resolveKanbanAssigneeRootSessionKey } from './kanban-assignee.js';
 import { gatewayRpcCall } from './gateway-rpc.js';
 
 const PARENT_SESSIONS_ACTIVE_MINUTES = 7 * 24 * 60;
-const SESSIONS_LIMIT = 200;
+const PARENT_ROOT_LOOKUP_SESSIONS_LIMIT = 1000;
 
 interface GatewaySessionSummary {
   key?: string;
@@ -91,7 +91,7 @@ export async function launchKanbanFallbackSubagentViaRpc(params: {
 
   const sessionsResponse = await gatewayRpcCall('sessions.list', {
     activeMinutes: PARENT_SESSIONS_ACTIVE_MINUTES,
-    limit: SESSIONS_LIMIT,
+    limit: PARENT_ROOT_LOOKUP_SESSIONS_LIMIT,
   }) as { sessions?: GatewaySessionSummary[] };
 
   const sessions = Array.isArray(sessionsResponse.sessions) ? sessionsResponse.sessions : [];
