@@ -69,6 +69,7 @@ function parseGatewayResponse(result: unknown): Record<string, unknown> {
 // ── Active poll timer tracking (for graceful shutdown) ───────────────
 
 const activePollTimers = new Set<ReturnType<typeof setTimeout>>();
+const activeBackgroundTasks = new Set<Promise<unknown>>();
 
 function trackTimeout(fn: () => void, ms: number): ReturnType<typeof setTimeout> {
   const id = setTimeout(() => {
@@ -79,8 +80,22 @@ function trackTimeout(fn: () => void, ms: number): ReturnType<typeof setTimeout>
   return id;
 }
 
-/** Cancel all active poll timers (call on shutdown). */
-export function cleanupKanbanPollers(): void {
+function trackBackgroundTask<T>(task: Promise<T>): Promise<T> {
+  let tracked: Promise<unknown>;
+  tracked = task.finally(() => {
+    activeBackgroundTasks.delete(tracked);
+  });
+  activeBackgroundTasks.add(tracked);
+  return tracked as Promise<T>;
+}
+
+/** Cancel all active poll timers and await pending async launch bookkeeping (call on shutdown). */
+export async function cleanupKanbanPollers(): Promise<void> {
+  const pendingBackgroundTasks = Array.from(activeBackgroundTasks);
+  if (pendingBackgroundTasks.length > 0) {
+    await Promise.allSettled(pendingBackgroundTasks);
+  }
+
   for (const t of activePollTimers) clearTimeout(t);
   activePollTimers.clear();
 }
@@ -1146,37 +1161,39 @@ app.post('/api/kanban/tasks/:id/execute', rateLimitGeneral, async (c) => {
       if (model) spawnArgs.model = model;
       if (thinking) spawnArgs.thinking = thinking;
 
-      invokeGatewayTool('sessions_spawn', spawnArgs)
-        .then(async (spawnRaw) => {
-          const spawn = parseGatewayResponse(spawnRaw);
-          const childSessionKey = typeof spawn.childSessionKey === 'string'
-            ? spawn.childSessionKey
-            : typeof spawn.sessionKey === 'string'
-              ? spawn.sessionKey
-              : typeof spawn.sessionId === 'string'
-                ? spawn.sessionId
-                : undefined;
-          const runId = typeof spawn.runId === 'string' ? spawn.runId : undefined;
+      void trackBackgroundTask(
+        invokeGatewayTool('sessions_spawn', spawnArgs)
+          .then(async (spawnRaw) => {
+            const spawn = parseGatewayResponse(spawnRaw);
+            const childSessionKey = typeof spawn.childSessionKey === 'string'
+              ? spawn.childSessionKey
+              : typeof spawn.sessionKey === 'string'
+                ? spawn.sessionKey
+                : typeof spawn.sessionId === 'string'
+                  ? spawn.sessionId
+                  : undefined;
+            const runId = typeof spawn.runId === 'string' ? spawn.runId : undefined;
 
-          const linkedTask = await store.attachRunIdentifiers(id, runSessionKey, {
-            childSessionKey,
-            runId,
-          });
-          if (!linkedTask) {
-            console.warn(`[kanban] Spawned run metadata arrived after task ${id} moved on from run ${runSessionKey}`);
-            return;
-          }
+            const linkedTask = await store.attachRunIdentifiers(id, runSessionKey, {
+              childSessionKey,
+              runId,
+            });
+            if (!linkedTask) {
+              console.warn(`[kanban] Spawned run metadata arrived after task ${id} moved on from run ${runSessionKey}`);
+              return;
+            }
 
-          pollSessionCompletion(store, id, {
-            correlationKey: runSessionKey,
-            childSessionKey: linkedTask.run?.childSessionKey ?? childSessionKey,
-            runId: linkedTask.run?.runId ?? runId,
-          });
-        })
-        .catch((err) => {
-          console.error(`[kanban] Failed to spawn session for task ${id}:`, err);
-          store.completeRun(id, runSessionKey, undefined, `Spawn failed: ${err.message}`).catch(() => {});
-        });
+            pollSessionCompletion(store, id, {
+              correlationKey: runSessionKey,
+              childSessionKey: linkedTask.run?.childSessionKey ?? childSessionKey,
+              runId: linkedTask.run?.runId ?? runId,
+            });
+          })
+          .catch((err) => {
+            console.error(`[kanban] Failed to spawn session for task ${id}:`, err);
+            store.completeRun(id, runSessionKey, undefined, `Spawn failed: ${err.message}`).catch(() => {});
+          }),
+      );
 
       return c.json(execution.task);
     }
@@ -1186,7 +1203,7 @@ app.post('/api/kanban/tasks/:id/execute', rateLimitGeneral, async (c) => {
       throw new Error(`No kanban launch strategy was selected for task ${id}`);
     }
 
-    void (async () => {
+    void trackBackgroundTask((async () => {
       let launchResult: {
         sessionKey: string;
         parentSessionKey: string;
@@ -1238,7 +1255,7 @@ app.post('/api/kanban/tasks/:id/execute', rateLimitGeneral, async (c) => {
         knownSessionKeysBefore: launchResult.knownSessionKeysBefore,
         runId: launchResult.runId,
       });
-    })();
+    })());
 
     return c.json(execution.task);
   } catch (err) {

@@ -19,7 +19,7 @@ beforeEach(async () => {
 afterEach(async () => {
   try {
     const mod = await import('./kanban.js');
-    mod.cleanupKanbanPollers();
+    await mod.cleanupKanbanPollers();
   } catch {
     // route module may not have been loaded in this test
   }
@@ -797,6 +797,45 @@ describe('POST /api/kanban/tasks/:id/execute', () => {
 
     expect(invokeGatewayToolMock).toHaveBeenCalledWith('sessions_spawn', expect.any(Object));
     expect(gatewayRpcMock).not.toHaveBeenCalledWith('chat.send', expect.anything());
+  });
+
+  it('waits for pending spawn bookkeeping during cleanup', async () => {
+    let releaseAttachRunIdentifiers: (() => void) | undefined;
+    const attachRunIdentifiersBlocked = new Promise<void>((resolve) => {
+      releaseAttachRunIdentifiers = resolve;
+    });
+
+    const invokeGatewayToolMock = vi.fn(async () => ({ sessionKey: 'agent:main:subagent:new-child' }));
+    const app = await buildApp({ invokeGatewayToolMock, executionMode: 'primary' });
+
+    const storeModule = await import('../lib/kanban-store.js');
+    const store = storeModule.getKanbanStore();
+    const originalAttachRunIdentifiers = store.attachRunIdentifiers.bind(store);
+    vi.spyOn(store, 'attachRunIdentifiers').mockImplementation(async (...args) => {
+      await attachRunIdentifiersBlocked;
+      return originalAttachRunIdentifiers(...args);
+    });
+
+    const task = await createTask(app, { status: 'todo' });
+    const res = await app.request(`/api/kanban/tasks/${task.id}/execute`, json({}));
+    expect(res.status).toBe(200);
+
+    const mod = await import('./kanban.js');
+    let cleanupResolved = false;
+    const cleanupPromise = Promise.resolve(mod.cleanupKanbanPollers()).then(() => {
+      cleanupResolved = true;
+    });
+
+    await Promise.resolve();
+    expect(cleanupResolved).toBe(false);
+
+    releaseAttachRunIdentifiers?.();
+    await cleanupPromise;
+
+    const tasksRes = await app.request('/api/kanban/tasks');
+    const tasks = await tasksRes.json() as { items: KanbanTask[] };
+    const updated = tasks.items.find((item) => item.id === task.id);
+    expect(updated?.run?.childSessionKey).toBe('agent:main:subagent:new-child');
   });
 
   it('rejects unassigned execution on the fallback path', async () => {
