@@ -9,6 +9,7 @@ import type { KanbanTask } from '../lib/kanban-store.js';
 let tmpDir: string;
 
 type GatewayToolMock = (tool: string, args?: Record<string, unknown>) => Promise<unknown>;
+type GatewayRpcMock = (method: string, params?: Record<string, unknown>) => Promise<unknown>;
 
 beforeEach(async () => {
   vi.resetModules();
@@ -24,21 +25,38 @@ afterEach(async () => {
   }
   vi.useRealTimers();
   vi.restoreAllMocks();
+  delete process.env.NERVE_KANBAN_EXECUTION_MODE;
   await fs.promises.rm(tmpDir, { recursive: true, force: true });
 });
 
-async function buildApp(options: { invokeGatewayToolMock?: GatewayToolMock } = {}): Promise<Hono> {
+async function buildApp(options: {
+  invokeGatewayToolMock?: GatewayToolMock;
+  gatewayRpcMock?: GatewayRpcMock;
+  executionMode?: 'primary' | 'fallback';
+} = {}): Promise<Hono> {
   // Mock rate-limit to be a no-op for tests
   vi.doMock('../middleware/rate-limit.js', () => ({
     rateLimitGeneral: vi.fn((_c: unknown, next: () => Promise<void>) => next()),
   }));
 
+  process.env.NERVE_KANBAN_EXECUTION_MODE = options.executionMode ?? 'primary';
+
   const invokeGatewayToolMock = options.invokeGatewayToolMock
     ?? (vi.fn(() => Promise.resolve({})) as GatewayToolMock);
+  const gatewayRpcMock = options.gatewayRpcMock
+    ?? (vi.fn(async (method: string) => {
+      if (method === 'sessions.list') {
+        return { sessions: [{ sessionKey: 'agent:reviewer:main' }] };
+      }
+      return {};
+    }) as GatewayRpcMock);
 
   // Mock gateway client so fire-and-forget spawn doesn't interfere with test cleanup
   vi.doMock('../lib/gateway-client.js', () => ({
     invokeGatewayTool: invokeGatewayToolMock,
+  }));
+  vi.doMock('../lib/gateway-rpc.js', () => ({
+    gatewayRpcCall: gatewayRpcMock,
   }));
 
   // Create store from the re-imported module so instanceof checks work
@@ -84,6 +102,23 @@ async function createTask(app: Hono, overrides: Record<string, unknown> = {}): P
     ...overrides,
   }));
   return res.json() as Promise<KanbanTask>;
+}
+
+async function overwriteStoredTaskAssignee(taskId: string, assignee?: string | null): Promise<void> {
+  const storePath = path.join(tmpDir, 'tasks.json');
+  const raw = JSON.parse(await fs.promises.readFile(storePath, 'utf8')) as {
+    tasks: Array<Record<string, unknown>>;
+  };
+  const task = raw.tasks.find((item) => item.id === taskId);
+  if (!task) throw new Error(`Task not found in raw fixture: ${taskId}`);
+
+  if (assignee == null) {
+    delete task.assignee;
+  } else {
+    task.assignee = assignee;
+  }
+
+  await fs.promises.writeFile(storePath, `${JSON.stringify(raw, null, 2)}\n`);
 }
 
 // ── GET /api/kanban/tasks ────────────────────────────────────────────
@@ -289,6 +324,31 @@ describe('POST /api/kanban/tasks', () => {
     expect(task.createdBy).toBe('agent:codex');
   });
 
+  it('canonicalizes assignee in the response', async () => {
+    const app = await buildApp();
+    const res = await app.request('/api/kanban/tasks', json({
+      title: 'Assigned task',
+      createdBy: 'operator',
+      assignee: 'agent:designer:main',
+    }));
+    expect(res.status).toBe(201);
+    const task = await res.json() as KanbanTask;
+    expect(task.assignee).toBe('agent:designer');
+  });
+
+  it('returns 400 for invalid root assignee', async () => {
+    const app = await buildApp();
+    const res = await app.request('/api/kanban/tasks', json({
+      title: 'Bad assignee',
+      createdBy: 'operator',
+      assignee: 'agent:main',
+    }));
+    expect(res.status).toBe(400);
+    const body = await res.json() as { error: string; details: string };
+    expect(body.error).toBe('validation_error');
+    expect(body.details).toBe('Invalid Kanban assignee: agent:main');
+  });
+
   it('returns 400 for invalid status', async () => {
     const app = await buildApp();
     const res = await app.request('/api/kanban/tasks', json({
@@ -428,6 +488,19 @@ describe('PATCH /api/kanban/tasks/:id', () => {
     const body = await listRes.json() as { items: KanbanTask[] };
     const fresh = body.items.find((item) => item.id === task.id);
     expect(fresh?.run).toBeUndefined();
+  });
+
+  it('canonicalizes assignee in the response', async () => {
+    const app = await buildApp();
+    const task = await createTask(app, { assignee: 'agent:codex' });
+
+    const res = await app.request(`/api/kanban/tasks/${task.id}`, jsonPatch({
+      version: task.version,
+      assignee: 'agent:designer:subagent:child',
+    }));
+    expect(res.status).toBe(200);
+    const updated = await res.json() as KanbanTask;
+    expect(updated.assignee).toBe('agent:designer');
   });
 });
 
@@ -653,6 +726,101 @@ describe('PUT /api/kanban/config', () => {
 // ── POST /api/kanban/tasks/:id/execute ───────────────────────────────
 
 describe('POST /api/kanban/tasks/:id/execute', () => {
+  it('routes assigned execution through the owning root session with a 1-week preflight lookup', async () => {
+    const invokeGatewayToolMock = vi.fn(async () => ({ sessionKey: 'agent:main:subagent:unexpected' }));
+    const gatewayRpcCalls: Array<{ method: string; params?: Record<string, unknown> }> = [];
+    const gatewayRpcMock: GatewayRpcMock = vi.fn(async (method, params) => {
+      gatewayRpcCalls.push({ method, params });
+      if (method === 'sessions.list') {
+        return { sessions: [{ sessionKey: 'agent:reviewer:main' }] };
+      }
+      if (method === 'chat.send') {
+        return { runId: 'run-assigned-1' };
+      }
+      return {};
+    });
+
+    const app = await buildApp({ invokeGatewayToolMock, gatewayRpcMock, executionMode: 'primary' });
+    const task = await createTask(app, { status: 'todo', assignee: 'agent:reviewer' });
+
+    const res = await app.request(`/api/kanban/tasks/${task.id}/execute`, json({}));
+    expect(res.status).toBe(200);
+    const body = await res.json() as KanbanTask;
+    expect(body.status).toBe('in-progress');
+    expect(body.run?.sessionKey).toMatch(/^kanban-root:/);
+
+    await new Promise((resolve) => setTimeout(resolve, 25));
+
+    expect(invokeGatewayToolMock).not.toHaveBeenCalledWith('sessions_spawn', expect.anything());
+    expect(gatewayRpcCalls.some((call) => (
+      call.method === 'sessions.list' && call.params?.activeMinutes === 7 * 24 * 60
+    ))).toBe(true);
+    const chatSendCall = gatewayRpcCalls.find((call) => call.method === 'chat.send');
+    expect(chatSendCall?.params?.sessionKey).toBe('agent:reviewer:main');
+  });
+
+  it('resolves a legacy stored assignee to the owning root session', async () => {
+    const gatewayRpcCalls: Array<{ method: string; params?: Record<string, unknown> }> = [];
+    const gatewayRpcMock: GatewayRpcMock = vi.fn(async (method, params) => {
+      gatewayRpcCalls.push({ method, params });
+      if (method === 'sessions.list') {
+        return { sessions: [{ sessionKey: 'agent:reviewer:main' }] };
+      }
+      if (method === 'chat.send') {
+        return { runId: 'run-legacy-assignee' };
+      }
+      return {};
+    });
+
+    const app = await buildApp({ gatewayRpcMock, executionMode: 'primary' });
+    const task = await createTask(app, { status: 'todo', assignee: 'agent:codex' });
+    await overwriteStoredTaskAssignee(task.id, 'agent:reviewer:subagent:child');
+
+    const res = await app.request(`/api/kanban/tasks/${task.id}/execute`, json({}));
+    expect(res.status).toBe(200);
+
+    await new Promise((resolve) => setTimeout(resolve, 25));
+
+    const chatSendCall = gatewayRpcCalls.find((call) => call.method === 'chat.send');
+    expect(chatSendCall?.params?.sessionKey).toBe('agent:reviewer:main');
+  });
+
+  it('treats legacy agent:main assignees as unassigned on the normal path', async () => {
+    const invokeGatewayToolMock = vi.fn(async () => ({ sessionKey: 'agent:main:subagent:new-child' }));
+    const gatewayRpcMock: GatewayRpcMock = vi.fn(async () => ({ sessions: [] }));
+    const app = await buildApp({ invokeGatewayToolMock, gatewayRpcMock, executionMode: 'primary' });
+    const task = await createTask(app, { status: 'todo', assignee: 'agent:codex' });
+    await overwriteStoredTaskAssignee(task.id, 'agent:main');
+
+    const res = await app.request(`/api/kanban/tasks/${task.id}/execute`, json({}));
+    expect(res.status).toBe(200);
+
+    expect(invokeGatewayToolMock).toHaveBeenCalledWith('sessions_spawn', expect.any(Object));
+    expect(gatewayRpcMock).not.toHaveBeenCalledWith('chat.send', expect.anything());
+  });
+
+  it('rejects unassigned execution on the fallback path', async () => {
+    const app = await buildApp({ executionMode: 'fallback' });
+    const task = await createTask(app, { status: 'todo' });
+
+    const res = await app.request(`/api/kanban/tasks/${task.id}/execute`, json({}));
+    expect(res.status).toBe(409);
+    const body = await res.json() as { error: string; details: string };
+    expect(body.error).toBe('invalid_execution_target');
+    expect(body.details).toContain('requires assigning the task to a live worker agent root');
+  });
+
+  it('rejects legacy agent:main assignees on the fallback path', async () => {
+    const app = await buildApp({ executionMode: 'fallback' });
+    const task = await createTask(app, { status: 'todo', assignee: 'agent:codex' });
+    await overwriteStoredTaskAssignee(task.id, 'agent:main');
+
+    const res = await app.request(`/api/kanban/tasks/${task.id}/execute`, json({}));
+    expect(res.status).toBe(409);
+    const body = await res.json() as { error: string; details: string };
+    expect(body.error).toBe('invalid_execution_target');
+  });
+
   it('executes a todo task', async () => {
     const app = await buildApp();
     const task = await createTask(app, { status: 'todo' });
@@ -1075,6 +1243,19 @@ describe('POST /api/kanban/proposals', () => {
       proposedBy: 'agent:codex',
     }));
     expect(res.status).toBe(400);
+  });
+
+  it('returns 400 for invalid root assignee on create proposal', async () => {
+    const app = await buildApp();
+    const res = await app.request('/api/kanban/proposals', json({
+      type: 'create',
+      payload: { title: 'Bad proposal', assignee: 'agent:main' },
+      proposedBy: 'agent:codex',
+    }));
+    expect(res.status).toBe(400);
+    const body = await res.json() as { error: string; details: string };
+    expect(body.error).toBe('validation_error');
+    expect(body.details).toBe('Invalid Kanban assignee: agent:main');
   });
 
   it('returns 400 for invalid custom status on create proposal', async () => {
