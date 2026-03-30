@@ -46,22 +46,34 @@ const LANG_MAP: Record<string, LanguageLoader> = {
     ]).then(([shell, lang]) =>
       new lang.LanguageSupport(lang.StreamLanguage.define(shell.shell)),
     ),
+  '.rb': () =>
+    Promise.all([
+      import('@codemirror/legacy-modes/mode/ruby'),
+      import('@codemirror/language'),
+    ]).then(([ruby, lang]) =>
+      new lang.LanguageSupport(lang.StreamLanguage.define(ruby.ruby)),
+    ),
+  '.pl': () =>
+    Promise.all([
+      import('@codemirror/legacy-modes/mode/perl'),
+      import('@codemirror/language'),
+    ]).then(([perl, lang]) =>
+      new lang.LanguageSupport(lang.StreamLanguage.define(perl.perl)),
+    ),
 };
 
 /** Shebang regex → LANG_MAP key (checked in order) */
 const SHEBANG_TO_EXT: Array<[RegExp, string]> = [
   [/\bpython[23]?\b/, '.py'],
   [/\b(bash|sh|zsh|fish)\b/, '.sh'],
-  [/\b(node|nodejs|deno|bun|tsx|ts-node)\b/, '.js'],
   [/\bruby\b/, '.rb'],
   [/\bperl\b/, '.pl'],
+  [/\bts-node\b/, '.ts'],
+  [/\btsx\b/, '.tsx'],
+  [/\b(node|nodejs|deno|bun)\b/, '.js'],
 ];
 
-/** Resolve a CodeMirror language extension for the given filename (and optionally file content for shebang fallback). */
-export async function getLanguageExtension(
-  filename: string,
-  content?: string,
-): Promise<Extension | null> {
+export function resolveLanguageExtensionKey(filename: string, content?: string): string {
   let ext = filename.includes('.')
     ? '.' + filename.split('.').pop()!.toLowerCase()
     : '';
@@ -73,6 +85,15 @@ export async function getLanguageExtension(
       }
     }
   }
+  return LANG_MAP[ext] ? ext : '';
+}
+
+/** Resolve a CodeMirror language extension for the given filename (and optionally file content for shebang fallback). */
+export async function getLanguageExtension(
+  filename: string,
+  content?: string,
+): Promise<Extension | null> {
+  const ext = resolveLanguageExtensionKey(filename, content);
   const loader = LANG_MAP[ext];
   if (!loader) return null;
   try {
