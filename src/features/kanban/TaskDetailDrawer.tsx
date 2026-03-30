@@ -371,7 +371,6 @@ export function TaskDetailDrawer({ task, onClose, onUpdate, onDelete, onExecute,
                       ariaLabel="Assignee"
                       placeholder="Select assignee"
                       noResultsText="No matching assignees"
-                      className="cockpit-input"
                       inline
                     />
                   </div>

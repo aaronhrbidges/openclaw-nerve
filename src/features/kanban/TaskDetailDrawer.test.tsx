@@ -65,6 +65,13 @@ describe('TaskDetailDrawer', () => {
     expect(screen.getByRole('combobox', { name: 'Assignee' })).toHaveValue('Designer');
   });
 
+  it('does not render the assignee combobox inside an extra input-styled shell', () => {
+    renderDrawer(makeTask({ assignee: 'agent:designer' }));
+
+    const combobox = screen.getByRole('combobox', { name: 'Assignee' });
+    expect(combobox.parentElement).not.toHaveClass('cockpit-input');
+  });
+
   it('shows a disabled stale-current option when the current assignee is no longer active', async () => {
     const user = userEvent.setup();
     renderDrawer(makeTask({ assignee: 'agent:ghost-reviewer' }));
