@@ -29,7 +29,7 @@ Connects Nerve to your OpenClaw gateway. The wizard auto-detects the gateway tok
 Tests the connection before proceeding. If the gateway is unreachable, setup stops so you can fix the gateway or token first. On current OpenClaw builds, the wizard also:
 - Reads the real gateway token from the systemd service file (works around a known bug where `openclaw onboard` writes different tokens to systemd and `openclaw.json`)
 - Bootstraps `paired.json` and `device-auth.json` with full operator scopes if they don't exist yet
-- Pre-pairs Nerve's device identity in the normal setup path so it can connect without manual approval
+- Pre-pairs Nerve's device identity in the normal setup path so it can connect without manual approval (`openclaw devices approve`)
 - Restarts the gateway to apply changes
 
 #### 2. Agent Identity

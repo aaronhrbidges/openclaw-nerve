@@ -1716,7 +1716,7 @@ Move a task to a different position within its column or to another column. CAS-
 
 ### `POST /api/kanban/tasks/:id/execute`
 
-Execute a task and move it to `in-progress`. The launch path depends on the task's assignee and platform.
+Execute a task and move it to `in-progress`. The launch path depends on the task's assignee and platform. The task must be in `todo` or `backlog` status. Moves the task to `in-progress` and starts polling the agent session for completion.
 
 **Rate Limit:** General (60/min)
 
