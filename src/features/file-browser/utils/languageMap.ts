@@ -48,13 +48,31 @@ const LANG_MAP: Record<string, LanguageLoader> = {
     ),
 };
 
-/** Resolve a CodeMirror language extension for the given filename. */
+/** Shebang regex → LANG_MAP key (checked in order) */
+const SHEBANG_TO_EXT: Array<[RegExp, string]> = [
+  [/\bpython[23]?\b/, '.py'],
+  [/\b(bash|sh|zsh|fish)\b/, '.sh'],
+  [/\b(node|nodejs|deno|bun|tsx|ts-node)\b/, '.js'],
+  [/\bruby\b/, '.rb'],
+  [/\bperl\b/, '.pl'],
+];
+
+/** Resolve a CodeMirror language extension for the given filename (and optionally file content for shebang fallback). */
 export async function getLanguageExtension(
   filename: string,
+  content?: string,
 ): Promise<Extension | null> {
-  const ext = filename.includes('.')
+  let ext = filename.includes('.')
     ? '.' + filename.split('.').pop()!.toLowerCase()
     : '';
+  if (!LANG_MAP[ext] && content) {
+    const firstLine = content.slice(0, content.indexOf('\n')).trim();
+    if (firstLine.startsWith('#!')) {
+      for (const [re, mappedExt] of SHEBANG_TO_EXT) {
+        if (re.test(firstLine)) { ext = mappedExt; break; }
+      }
+    }
+  }
   const loader = LANG_MAP[ext];
   if (!loader) return null;
   try {
