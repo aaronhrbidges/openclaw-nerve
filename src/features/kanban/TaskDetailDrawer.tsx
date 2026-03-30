@@ -1,12 +1,15 @@
-import { useState, useCallback, useEffect, useRef } from 'react';
+import { useState, useCallback, useEffect, useRef, useMemo } from 'react';
 import {
   X, Play, CheckCircle2, XCircle, Trash2, Save, Loader2,
   Clock, User, Tag, AlertTriangle, MessageSquare, StopCircle,
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
+import { useSessionContext } from '@/contexts/SessionContext';
 import { COLUMN_LABELS, type KanbanTask, type TaskStatus, type TaskPriority } from './types';
 import type { UpdateTaskPayload, VersionConflictError } from './hooks/useKanban';
+import { AssigneeCombobox } from './components/AssigneeCombobox';
+import { buildAssigneeOptionsForEdit } from './lib/assigneeOptions';
 import { getTaskPriorityLabel, getTaskPriorityTone, getTaskRunTone, getTaskStatusTone, getTaskPriority, getTaskStatus } from './tone';
 
 /* ── Elapsed time helper ── */
@@ -46,6 +49,7 @@ interface TaskDetailDrawerProps {
 }
 
 export function TaskDetailDrawer({ task, onClose, onUpdate, onDelete, onExecute, onApprove, onReject, onAbort }: TaskDetailDrawerProps) {
+  const { sessions, agentName } = useSessionContext();
   const [editTitle, setEditTitle] = useState('');
   const [editDescription, setEditDescription] = useState('');
   const [editStatus, setEditStatus] = useState<TaskStatus>('todo');
@@ -223,6 +227,10 @@ export function TaskDetailDrawer({ task, onClose, onUpdate, onDelete, onExecute,
   }, [task?.id]);
 
   const isOpen = task !== null;
+  const assigneeOptions = useMemo(
+    () => buildAssigneeOptionsForEdit(sessions, task?.assignee ?? null, agentName),
+    [agentName, sessions, task?.assignee],
+  );
 
   const selectClass = 'cockpit-select h-11 text-sm';
   const priorityTone = task ? getTaskPriorityTone(editPriority) : null;
@@ -355,12 +363,15 @@ export function TaskDetailDrawer({ task, onClose, onUpdate, onDelete, onExecute,
                       <User size={10} className="mr-1 inline" />
                       Assignee
                     </label>
-                    <Input
+                    <AssigneeCombobox
                       id="kb-assignee"
                       value={editAssignee}
-                      onChange={e => { setEditAssignee(e.target.value); markDirty(); }}
-                      placeholder="operator"
-                      className="cockpit-input h-11"
+                      onChange={(nextValue) => { setEditAssignee(nextValue); markDirty(); }}
+                      options={assigneeOptions}
+                      ariaLabel="Assignee"
+                      placeholder="Select assignee"
+                      noResultsText="No matching assignees"
+                      className="cockpit-input"
                     />
                   </div>
                 </div>

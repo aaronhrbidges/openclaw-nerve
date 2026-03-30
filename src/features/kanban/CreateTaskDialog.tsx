@@ -1,4 +1,4 @@
-import { useState, useCallback, useRef, useEffect } from 'react';
+import { useState, useCallback, useRef, useEffect, useMemo } from 'react';
 import { Loader2 } from 'lucide-react';
 import {
   Dialog,
@@ -10,8 +10,11 @@ import {
 } from '@/components/ui/dialog';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
+import { useSessionContext } from '@/contexts/SessionContext';
 import type { TaskStatus, TaskPriority } from './types';
 import type { CreateTaskPayload } from './hooks/useKanban';
+import { AssigneeCombobox } from './components/AssigneeCombobox';
+import { buildAssigneeOptions } from './lib/assigneeOptions';
 
 const STATUS_OPTIONS: { value: TaskStatus; label: string }[] = [
   { value: 'backlog', label: 'Backlog' },
@@ -34,6 +37,7 @@ interface CreateTaskDialogProps {
 }
 
 export function CreateTaskDialog({ open, onOpenChange, onCreate }: CreateTaskDialogProps) {
+  const { sessions, agentName } = useSessionContext();
   const [title, setTitle] = useState('');
   const [description, setDescription] = useState('');
   const [status, setStatus] = useState<TaskStatus>('todo');
@@ -68,6 +72,10 @@ export function CreateTaskDialog({ open, onOpenChange, onCreate }: CreateTaskDia
 
   const trimmedTitle = title.trim();
   const isValid = trimmedTitle.length > 0 && trimmedTitle.length <= 500;
+  const assigneeOptions = useMemo(
+    () => buildAssigneeOptions(sessions, agentName),
+    [agentName, sessions],
+  );
 
   const handleSubmit = useCallback(async () => {
     if (!isValid || submitting) return;
@@ -78,14 +86,15 @@ export function CreateTaskDialog({ open, onOpenChange, onCreate }: CreateTaskDia
         .split(',')
         .map(l => l.trim())
         .filter(Boolean);
-      await onCreate({
+      const payload: CreateTaskPayload = {
         title: trimmedTitle,
         description: description.trim() || undefined,
         status,
         priority,
-        labels: labels.length > 0 ? labels : undefined,
-        assignee: assignee.trim() || undefined,
-      });
+        ...(labels.length > 0 ? { labels } : {}),
+        ...(assignee ? { assignee } : {}),
+      };
+      await onCreate(payload);
       onOpenChange(false);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Couldn't create task. Try again.");
@@ -212,12 +221,14 @@ export function CreateTaskDialog({ open, onOpenChange, onCreate }: CreateTaskDia
             <label htmlFor="kb-new-assignee" className="cockpit-field-label mb-2 block">
               Assignee
             </label>
-            <Input
+            <AssigneeCombobox
               id="kb-new-assignee"
               value={assignee}
-              onChange={e => setAssignee(e.target.value)}
-              placeholder="operator"
-              className="h-11"
+              onChange={setAssignee}
+              options={assigneeOptions}
+              ariaLabel="Assignee"
+              placeholder="Select assignee"
+              noResultsText="No matching assignees"
             />
           </div>
         </div>
