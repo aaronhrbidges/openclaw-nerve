@@ -32,19 +32,27 @@ function buildActiveAgentOptions(sessions: Session[], agentName = 'Agent'): Assi
     .sort((a, b) => a.label.localeCompare(b.label, undefined, { sensitivity: 'base' }));
 }
 
+function humanizeStaleValue(value: string): string {
+  const readable = value
+    .trim()
+    .replace(/([a-z0-9])([A-Z])/g, '$1 $2')
+    .replace(/[:/_-]+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+
+  if (!readable) return value;
+  return readable.charAt(0).toUpperCase() + readable.slice(1);
+}
+
 function buildStaleCurrentOption(currentValue: string): AssigneeOption {
-  const match = currentValue.match(/^agent:([^:]+)/);
-  if (match?.[1] && match[1] !== 'main') {
-    return {
-      value: currentValue,
-      label: `Agent ${match[1]} (inactive)`,
-      disabled: true,
-    };
-  }
+  const match = currentValue.match(/^agent:([^:]+)(?::.*)?$/);
+  const readableLabel = match?.[1] && match[1] !== 'main'
+    ? `Agent ${humanizeStaleValue(match[1]).toLowerCase()}`
+    : humanizeStaleValue(currentValue);
 
   return {
     value: currentValue,
-    label: `${currentValue} (inactive)`,
+    label: `${readableLabel} (inactive)`,
     disabled: true,
   };
 }
