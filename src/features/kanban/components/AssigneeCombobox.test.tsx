@@ -173,6 +173,26 @@ describe('AssigneeCombobox', () => {
     expect(screen.getByPlaceholderText('Select an assignee')).toBeInTheDocument();
   });
 
+  it('renders the listbox inline when inline is enabled', async () => {
+    const user = userEvent.setup();
+    render(
+      <div data-testid="combobox-host">
+        <AssigneeCombobox
+          value=""
+          onChange={vi.fn()}
+          options={FULL_OPTIONS}
+          ariaLabel="Assignee"
+          inline
+        />
+      </div>,
+    );
+
+    await user.click(screen.getByRole('combobox', { name: 'Assignee' }));
+
+    const listbox = await screen.findByRole('listbox');
+    expect(screen.getByTestId('combobox-host')).toContainElement(listbox);
+  });
+
   it('keeps highlightedIndex valid when filtering shrinks the list', async () => {
     const user = userEvent.setup();
     const { onChange } = renderCombobox();

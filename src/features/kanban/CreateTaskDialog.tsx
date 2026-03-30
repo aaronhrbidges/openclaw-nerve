@@ -229,6 +229,7 @@ export function CreateTaskDialog({ open, onOpenChange, onCreate }: CreateTaskDia
               ariaLabel="Assignee"
               placeholder="Select assignee"
               noResultsText="No matching assignees"
+              inline
             />
           </div>
         </div>

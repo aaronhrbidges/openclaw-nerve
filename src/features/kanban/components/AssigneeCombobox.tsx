@@ -15,6 +15,7 @@ export interface AssigneeComboboxProps {
   noActiveAgentsText?: string;
   disabled?: boolean;
   className?: string;
+  inline?: boolean;
 }
 
 function isEnabledOption(option: AssigneeOption | undefined): option is AssigneeOption {
@@ -55,6 +56,7 @@ export function AssigneeCombobox({
   noActiveAgentsText = 'No active agents available',
   disabled = false,
   className,
+  inline = false,
 }: AssigneeComboboxProps) {
   const reactId = useId();
   const inputId = id ?? `assignee-combobox-${reactId}`;
@@ -97,16 +99,20 @@ export function AssigneeCombobox({
     if (disabled) return;
     setFilter('');
     setHighlightedIndex(getInitialHighlightIndex(options, value));
-    setMenuStyle(getInitialMenuStyle());
+    if (!inline) {
+      setMenuStyle(getInitialMenuStyle());
+    }
     setOpen(true);
-  }, [disabled, getInitialMenuStyle, options, value]);
+  }, [disabled, getInitialMenuStyle, inline, options, value]);
 
   const closePopup = useCallback(() => {
     setOpen(false);
     setFilter('');
     setHighlightedIndex(-1);
-    setMenuStyle({});
-  }, []);
+    if (!inline) {
+      setMenuStyle({});
+    }
+  }, [inline]);
 
   const selectOption = useCallback((option: AssigneeOption | undefined) => {
     if (!isEnabledOption(option)) return;
@@ -143,7 +149,7 @@ export function AssigneeCombobox({
   }, [filteredOptions.length, open, resolvedHighlightedIndex]);
 
   useLayoutEffect(() => {
-    if (!open || !inputRef.current) return;
+    if (inline || !open || !inputRef.current) return;
 
     const rect = inputRef.current.getBoundingClientRect();
     const menuEl = listboxRef.current;
@@ -180,7 +186,7 @@ export function AssigneeCombobox({
       visibility: 'visible',
       zIndex: 9999,
     });
-  }, [filteredOptions.length, open]);
+  }, [filteredOptions.length, inline, open]);
 
   const activeDescendantId =
     open && resolvedHighlightedIndex >= 0 && resolvedHighlightedIndex < filteredOptions.length
@@ -228,14 +234,17 @@ export function AssigneeCombobox({
     }
   };
 
-  const menu = open && !disabled ? createPortal(
+  const menuContent = open && !disabled ? (
     <ul
       ref={listboxRef}
       id={listboxId}
       role="listbox"
       aria-label={ariaLabel}
-      style={menuStyle}
-      className="max-h-64 overflow-auto rounded-xl border border-border/80 bg-background shadow-lg"
+      style={inline ? undefined : menuStyle}
+      className={cn(
+        'max-h-64 overflow-auto rounded-xl border border-border/80 bg-background shadow-lg',
+        inline ? 'absolute left-0 top-full z-50 mt-1 min-w-full' : '',
+      )}
     >
       {!filter.trim() && !hasActiveAgents && (
         <li className="border-b border-border/60 px-3 py-2 text-xs text-muted-foreground">
@@ -272,9 +281,10 @@ export function AssigneeCombobox({
           );
         })
       )}
-    </ul>,
-    document.body,
+    </ul>
   ) : null;
+
+  const menu = menuContent && !inline ? createPortal(menuContent, document.body) : menuContent;
 
   return (
     <div ref={containerRef} className={cn('relative', className)}>
