@@ -339,6 +339,7 @@ const approveSchema = z.object({
 
 const rejectSchema = z.object({
   note: z.string().min(1).max(5000),
+  resetTo: z.enum(['fix', 'revise-plan', 'revise-spec']).default('fix'),
 });
 
 const abortSchema = z.object({
@@ -743,8 +744,8 @@ app.post('/api/kanban/tasks/:id/execute', rateLimitGeneral, async (c) => {
       if (!lastSession) {
         phase = 'specify';
       } else if (lastSession.status === 'error') {
-        // Retry same phase on error
-        phase = lastSession.phase;
+        // Use currentPhase if set by rejection reset, otherwise retry same phase
+        phase = task.currentPhase || lastSession.phase;
       } else if (lastSession.status === 'completed') {
         const idx = SDD_PHASES.indexOf(lastSession.phase);
         phase = idx < SDD_PHASES.length - 1 ? SDD_PHASES[idx + 1] : 'implement';
@@ -810,14 +811,33 @@ app.post('/api/kanban/tasks/:id/execute', rateLimitGeneral, async (c) => {
         `     cd "../work-${workId}"`,
         `   fi`,
         `   \`\`\``,
-        `4. Check if a resume token exists at /tmp/sdd-resume-${id}.token`,
+        `4. **Load context for your phase.** Find the spec dir (look for \`.specify/specs/gh-*\` in the worktree) and read these files:`,
+        ...(phase === 'specify' ? [
+        `   - \`.specify/memory/prd.md\` — the product requirements (source of truth)`,
+        `   - \`.specify/memory/constitution.md\` — non-negotiable rules`,
+        `   - \`completion-log.md\` in the spec dir (if exists — means you are revising, not starting fresh)`,
+        `   - If revising: also read the existing \`spec.md\` to understand what needs to change`,
+        ] : phase === 'plan' ? [
+        `   - \`spec.md\` in the spec dir — **REQUIRED, error if missing**`,
+        `   - \`test-intent.md\` in the spec dir — **REQUIRED, error if missing**`,
+        `   - \`completion-log.md\` in the spec dir`,
+        `   - If revising: also read the existing \`plan.md\` and \`tasks.md\` to understand what needs to change`,
+        ] : [
+        `   - \`spec.md\` in the spec dir — **REQUIRED**`,
+        `   - \`plan.md\` in the spec dir — **REQUIRED, error if missing**`,
+        `   - \`tasks.md\` in the spec dir — **REQUIRED, error if missing**`,
+        `   - \`completion-log.md\` in the spec dir`,
+        `   - Check \`git log\` for Task N/M commit markers to find where implementation left off`,
+        ]),
+        `   If a required file is missing, something went wrong — report it and STOP.`,
+        `5. Check if a resume token exists at /tmp/sdd-resume-${id}.token`,
         `   - If yes: \`lobster resume --token "$(cat /tmp/sdd-resume-${id}.token)" --approve yes\``,
         `   - If no:`,
         `     \`\`\`bash`,
         `     lobster run --mode tool --file .lobster/sdd-pipeline.lobster \\`,
         `       --args-json '{"description":"${task.title.replace(/'/g, "\\'")}","issue":"${ghIssue}","risk":"${risk}","workdir":"../work-${workId}","task_id":"${id}"}'`,
         `     \`\`\``,
-        `5. When Lobster returns needs_approval:`,
+        `6. When Lobster returns needs_approval:`,
         `   - Parse sdd_step, branch, link from the output`,
         `   - Save the resumeToken to /tmp/sdd-resume-${id}.token`,
         `   - Update kanban: [kanban:update]{"id":"${id}","status":"needs-input","result":"[sdd:{step}][link:{link}] {summary}"}[/kanban:update]`,
@@ -825,7 +845,7 @@ app.post('/api/kanban/tasks/:id/execute', rateLimitGeneral, async (c) => {
         `   - The operator will review your work and reply here with feedback or approval.`,
         `   - When the operator replies, read their message and respond. Continue the conversation until they are satisfied.`,
         `   - Only proceed to the next Lobster step when the operator explicitly approves (e.g. "approved", "lgtm", "continue").`,
-        `6. When Lobster returns ok (complete):`,
+        `7. When Lobster returns ok (complete):`,
         `   - Update kanban: [kanban:update]{"id":"${id}","status":"review","result":"[sdd:PR Review][link:{pr}] Complete."}[/kanban:update]`,
         `   - Clean up: rm /tmp/sdd-resume-${id}.token`,
         `   - Stay alive for final review conversation. Only stop when the operator approves.`,
@@ -963,18 +983,38 @@ app.post('/api/kanban/tasks/:id/reject', rateLimitGeneral, async (c) => {
   try {
     const task = await store.rejectTask(id, parsed.data.note, 'operator');
 
-    // Mark current phase session as error
+    // Mark current phase session as error and set reset target
+    const RESET_PHASE_MAP: Record<string, SddPhase> = {
+      'fix': 'implement',       // default — stays in current phase
+      'revise-plan': 'plan',
+      'revise-spec': 'specify',
+    };
+
     if (task.phaseSessions?.length) {
       const now = Date.now();
       const sessions = [...task.phaseSessions];
       const activeIdx = sessions.findIndex(s => s.status === 'active');
       if (activeIdx !== -1) {
+        const currentPhase = sessions[activeIdx].phase;
         sessions[activeIdx] = { ...sessions[activeIdx], status: 'error', endedAt: now };
-      }
 
-      await store.updateTask(id, task.version, { phaseSessions: sessions });
-      task.phaseSessions = sessions;
-      task.version += 1;
+        // For 'fix', reset to current phase (not always implement)
+        const resetPhase = parsed.data.resetTo === 'fix'
+          ? currentPhase
+          : RESET_PHASE_MAP[parsed.data.resetTo] || currentPhase;
+
+        await store.updateTask(id, task.version, {
+          phaseSessions: sessions,
+          currentPhase: resetPhase,
+        });
+        task.phaseSessions = sessions;
+        task.currentPhase = resetPhase;
+        task.version += 1;
+      } else {
+        await store.updateTask(id, task.version, { phaseSessions: sessions });
+        task.phaseSessions = sessions;
+        task.version += 1;
+      }
     }
 
     return c.json(task);
