@@ -37,7 +37,7 @@ function uniqueSlugId(title: string, existingIds: Set<string>): string {
 
 // ── Types ────────────────────────────────────────────────────────────
 
-export type TaskStatus = 'backlog' | 'todo' | 'in-progress' | 'review' | 'done' | 'cancelled';
+export type TaskStatus = 'backlog' | 'todo' | 'in-progress' | 'needs-input' | 'blocked' | 'review' | 'done' | 'cancelled';
 export type TaskPriority = 'critical' | 'high' | 'normal' | 'low';
 export type TaskActor = 'operator' | `agent:${string}`;
 
@@ -55,6 +55,16 @@ export interface TaskRunLink {
   endedAt?: number;
   status: 'running' | 'done' | 'error' | 'aborted';
   error?: string;
+}
+
+export type SddPhase = 'specify' | 'plan' | 'implement';
+
+export interface PhaseSession {
+  phase: SddPhase;
+  sessionKey: string;
+  startedAt: number;
+  endedAt?: number;
+  status: 'active' | 'paused' | 'completed' | 'error';
 }
 
 export interface KanbanTask {
@@ -80,6 +90,8 @@ export interface KanbanTask {
   estimateMin?: number;
   actualMin?: number;
   feedback: TaskFeedback[];
+  phaseSessions?: PhaseSession[];
+  currentPhase?: SddPhase;
 }
 
 export interface KanbanBoardConfig {
@@ -209,12 +221,14 @@ const STATUS_ORDER: Record<TaskStatus, number> = {
   backlog: 0,
   todo: 1,
   'in-progress': 2,
-  review: 3,
-  done: 4,
-  cancelled: 5,
+  blocked: 3,
+  'needs-input': 4,
+  review: 5,
+  done: 6,
+  cancelled: 7,
 };
 
-const VALID_TASK_STATUSES = new Set<TaskStatus>(['backlog', 'todo', 'in-progress', 'review', 'done', 'cancelled']);
+const VALID_TASK_STATUSES = new Set<TaskStatus>(['backlog', 'todo', 'in-progress', 'needs-input', 'blocked', 'review', 'done', 'cancelled']);
 const VALID_TASK_PRIORITIES = new Set<TaskPriority>(['critical', 'high', 'normal', 'low']);
 
 function normalizeTaskStatus(value: unknown): TaskStatus {
@@ -519,6 +533,8 @@ export class KanbanStore {
         | 'resultAt'
         | 'run'
         | 'feedback'
+        | 'phaseSessions'
+        | 'currentPhase'
       >
     >,
     actor?: string,
@@ -669,12 +685,13 @@ export class KanbanStore {
         return task;
       }
 
-      // Validate transition: must be in todo or backlog
-      if (task.status !== 'todo' && task.status !== 'backlog') {
+      // Validate transition: must be in todo, backlog, needs-input, or blocked
+      const executableStatuses: TaskStatus[] = ['todo', 'backlog', 'needs-input', 'blocked'];
+      if (!executableStatuses.includes(task.status)) {
         throw new InvalidTransitionError(
           task.status,
           'in-progress',
-          `Cannot execute task in "${task.status}" status; must be "todo" or "backlog"`,
+          `Cannot execute task in "${task.status}" status; must be one of: ${executableStatuses.join(', ')}`,
         );
       }
 
@@ -717,16 +734,19 @@ export class KanbanStore {
 
       const task = data.tasks[idx];
 
-      if (task.status !== 'review') {
+      const isNeedsInput = task.status === 'needs-input';
+      if (task.status !== 'review' && !isNeedsInput) {
         throw new InvalidTransitionError(
           task.status,
-          'done',
-          `Cannot approve task in "${task.status}" status; must be "review"`,
+          isNeedsInput ? 'todo' : 'done',
+          `Cannot approve task in "${task.status}" status; must be "review" or "needs-input"`,
         );
       }
 
       const now = Date.now();
-      task.status = 'done';
+      // Approve from needs-input → back to todo (ready for re-execution to continue)
+      // Approve from review → done
+      task.status = isNeedsInput ? 'todo' : 'done';
 
       if (note) {
         task.feedback.push({
@@ -736,9 +756,10 @@ export class KanbanStore {
         });
       }
 
-      // Re-compute columnOrder for done column
+      // Re-compute columnOrder for target column
+      const targetStatus = task.status;
       const maxOrder = data.tasks
-        .filter((t) => t.status === 'done' && t.id !== id)
+        .filter((t) => t.status === targetStatus && t.id !== id)
         .reduce((max, t) => Math.max(max, t.columnOrder), -1);
       task.columnOrder = maxOrder + 1;
 
@@ -762,11 +783,11 @@ export class KanbanStore {
 
       const task = data.tasks[idx];
 
-      if (task.status !== 'review') {
+      if (task.status !== 'review' && task.status !== 'needs-input') {
         throw new InvalidTransitionError(
           task.status,
           'todo',
-          `Cannot reject task in "${task.status}" status; must be "review"`,
+          `Cannot reject task in "${task.status}" status; must be "review" or "needs-input"`,
         );
       }
 

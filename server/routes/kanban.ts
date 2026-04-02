@@ -29,6 +29,8 @@ import type {
   TaskPriority,
   TaskActor,
   ProposalStatus,
+  SddPhase,
+  PhaseSession,
 } from '../lib/kanban-store.js';
 
 const app = new Hono();
@@ -187,13 +189,23 @@ function pollSessionCompletion(
 
 // ── Zod schemas ──────────────────────────────────────────────────────
 
-const taskStatusSchema = z.enum(['backlog', 'todo', 'in-progress', 'review', 'done', 'cancelled']);
+const taskStatusSchema = z.enum(['backlog', 'todo', 'in-progress', 'needs-input', 'blocked', 'review', 'done', 'cancelled']);
 const taskPrioritySchema = z.enum(['critical', 'high', 'normal', 'low']);
 const taskActorSchema = z.union([
   z.literal('operator'),
   z.string().regex(/^agent:.+$/),
 ]) as z.ZodType<TaskActor>;
 const thinkingSchema = z.enum(['off', 'low', 'medium', 'high']);
+
+const sddPhaseSchema = z.enum(['specify', 'plan', 'implement']);
+
+const phaseSessionSchema = z.object({
+  phase: sddPhaseSchema,
+  sessionKey: z.string(),
+  startedAt: z.number(),
+  endedAt: z.number().optional(),
+  status: z.enum(['active', 'paused', 'completed', 'error']),
+});
 
 const feedbackSchema = z.object({
   at: z.number(),
@@ -243,6 +255,8 @@ const updateTaskSchema = z.object({
   resultAt: z.number().optional().nullable(),
   run: runLinkSchema.optional().nullable(),
   feedback: z.array(feedbackSchema).optional(),
+  phaseSessions: z.array(phaseSessionSchema).optional().nullable(),
+  currentPhase: sddPhaseSchema.optional().nullable(),
 });
 
 const reorderSchema = z.object({
@@ -316,6 +330,7 @@ const rejectProposalSchema = z.object({
 const executeSchema = z.object({
   model: z.string().max(200).optional(),
   thinking: thinkingSchema.optional(),
+  context: z.string().max(5000).optional(),
 });
 
 const approveSchema = z.object({
@@ -715,10 +730,106 @@ app.post('/api/kanban/tasks/:id/execute', rateLimitGeneral, async (c) => {
 
     // Spawn agent session via gateway (fire-and-forget)
     const taskDescription = task.description || task.title;
+    const labels = (task.labels || []) as string[];
+    const isSddTask = labels.some((l: string) => /^phase-|^product|^infra/.test(l));
+
+    // ── Phase determination for SDD tasks ──
+    const SDD_PHASES: SddPhase[] = ['specify', 'plan', 'implement'];
+    let phase: SddPhase | undefined;
+    if (isSddTask) {
+      const sessions = task.phaseSessions || [];
+      const lastSession = sessions.length > 0 ? sessions[sessions.length - 1] : null;
+
+      if (!lastSession) {
+        phase = 'specify';
+      } else if (lastSession.status === 'error') {
+        // Retry same phase on error
+        phase = lastSession.phase;
+      } else if (lastSession.status === 'completed') {
+        const idx = SDD_PHASES.indexOf(lastSession.phase);
+        phase = idx < SDD_PHASES.length - 1 ? SDD_PHASES[idx + 1] : 'implement';
+      } else {
+        // Active/paused session — start next phase anyway (shouldn't normally happen)
+        phase = lastSession.phase;
+      }
+
+      // Create PhaseSession record
+      const now = Date.now();
+      const phaseSessionKey = `task:${id}:phase:${phase}`;
+      const phaseSession: PhaseSession = {
+        phase,
+        sessionKey: phaseSessionKey,
+        startedAt: now,
+        status: 'active',
+      };
+
+      // Persist phase session on task
+      const updatedSessions = [...(task.phaseSessions || []), phaseSession];
+      await store.updateTask(id, task.version, {
+        phaseSessions: updatedSessions,
+        currentPhase: phase,
+      });
+      // Bump local copy for the spawn below
+      task.phaseSessions = updatedSessions;
+      task.currentPhase = phase;
+      task.version += 1;
+    }
+
+    let taskPrompt: string;
+    if (isSddTask) {
+      taskPrompt = [
+        `You are executing an SDD task. Use the Lobster pipeline — do NOT freelance the steps.`,
+        ``,
+        `## Task: ${task.title}`,
+        `## Task ID: ${id}`,
+        `## Current Phase: ${phase}`,
+        `## Description: ${taskDescription}`,
+        ``,
+        `## Instructions`,
+        ``,
+        `1. Read AGENTS.md — it has the full Lobster integration instructions.`,
+        `2. Check dependencies: if task labels include depends:phase-X, verify those are done on the board.`,
+        `   If not done: [kanban:update]{"id":"${id}","status":"blocked","result":"Blocked by Phase X."}[/kanban:update] and STOP.`,
+        `3. Create or switch to the worktree: ../work-{issue}`,
+        `4. Check if a resume token exists at /tmp/sdd-resume-${id}.token`,
+        `   - If yes: lobster resume --token "$(cat /tmp/sdd-resume-${id}.token)" --approve yes`,
+        `   - If no: lobster run --mode tool --file .lobster/sdd-pipeline.lobster --args-json with task details`,
+        `5. When Lobster returns needs_approval:`,
+        `   - Parse sdd_step, branch, link from the output`,
+        `   - Save the resumeToken to /tmp/sdd-resume-${id}.token`,
+        `   - Update kanban: [kanban:update]{"id":"${id}","status":"needs-input","result":"[sdd:{step}][link:{link}] {summary}"}[/kanban:update]`,
+        `   - Spawn a discussion session: openclaw agent --session-id "discuss-${id}" --message "Task at {step}. Review: {link}"`,
+        `   - STOP and move to the next task.`,
+        `6. When Lobster returns ok (complete):`,
+        `   - Update kanban: [kanban:update]{"id":"${id}","status":"review","result":"[sdd:PR Review][link:{pr}] Complete."}[/kanban:update]`,
+        `   - Clean up: rm /tmp/sdd-resume-${id}.token`,
+        ``,
+        `## CRITICAL`,
+        `- Do NOT write specs, plans, or code yourself — Lobster invokes claude --print with the prompt files`,
+        `- Do NOT decide step order — Lobster enforces it`,
+        `- Do NOT skip gates`,
+        `- PRD is the source of truth — do not invent states, fields, or behaviors beyond the PRD`,
+      ].join('\n');
+    } else {
+      taskPrompt = `You are working on a Kanban task.\n\nTitle: ${task.title}\n\nDescription: ${taskDescription}\n\nDeliver your result as a clear summary of what was done.`;
+    }
+
+    // Append operator context and prior feedback to the prompt
+    if (parsed.data.context) {
+      taskPrompt += `\n\n## Operator Context\n${parsed.data.context}`;
+    }
+    if (task.feedback.length > 0) {
+      const feedbackBlock = task.feedback
+        .map(fb => `[${new Date(fb.at).toISOString()}] ${fb.by}: ${fb.note}`)
+        .join('\n');
+      taskPrompt += `\n\n## Prior Feedback\n${feedbackBlock}`;
+    }
+
+    const sessionLabel = phase ? `task:${id}:phase:${phase}` : `kb-${id}`;
     const spawnArgs: Record<string, unknown> = {
-      task: `You are working on a Kanban task.\n\nTitle: ${task.title}\n\nDescription: ${taskDescription}\n\nDeliver your result as a clear summary of what was done.`,
+      task: taskPrompt,
       mode: 'run',
-      label: `kb-${id}`,
+      label: sessionLabel,
     };
     // Use task's model, or board default. If neither is set, omit — OpenClaw
     // will use whatever default model the operator configured in openclaw.json.
@@ -728,7 +839,7 @@ app.post('/api/kanban/tasks/:id/execute', rateLimitGeneral, async (c) => {
     const thinking = task.thinking || config.defaultThinking;
     if (thinking) spawnArgs.thinking = thinking;
 
-    const runLabel = `kb-${id}`;
+    const runLabel = sessionLabel;
     invokeGatewayTool('sessions_spawn', spawnArgs)
       .then(() => {
         // Poll for session completion in the background
@@ -768,6 +879,34 @@ app.post('/api/kanban/tasks/:id/approve', rateLimitGeneral, async (c) => {
 
   try {
     const task = await store.approveTask(id, parsed.data.note, 'operator');
+
+    // Mark current phase session as completed and advance phase
+    if (task.phaseSessions?.length) {
+      const now = Date.now();
+      const sessions = [...task.phaseSessions];
+      const activeIdx = sessions.findIndex(s => s.status === 'active');
+      if (activeIdx !== -1) {
+        sessions[activeIdx] = { ...sessions[activeIdx], status: 'completed', endedAt: now };
+      }
+
+      // Determine next phase
+      const SDD_PHASES: SddPhase[] = ['specify', 'plan', 'implement'];
+      const completedPhase = activeIdx !== -1 ? sessions[activeIdx].phase : task.currentPhase;
+      let nextPhase: SddPhase | undefined;
+      if (completedPhase) {
+        const idx = SDD_PHASES.indexOf(completedPhase);
+        nextPhase = idx < SDD_PHASES.length - 1 ? SDD_PHASES[idx + 1] : undefined;
+      }
+
+      await store.updateTask(id, task.version, {
+        phaseSessions: sessions,
+        currentPhase: nextPhase ?? task.currentPhase,
+      });
+      task.phaseSessions = sessions;
+      if (nextPhase) task.currentPhase = nextPhase;
+      task.version += 1;
+    }
+
     return c.json(task);
   } catch (err) {
     return handleWorkflowError(c, err);
@@ -796,6 +935,21 @@ app.post('/api/kanban/tasks/:id/reject', rateLimitGeneral, async (c) => {
 
   try {
     const task = await store.rejectTask(id, parsed.data.note, 'operator');
+
+    // Mark current phase session as error
+    if (task.phaseSessions?.length) {
+      const now = Date.now();
+      const sessions = [...task.phaseSessions];
+      const activeIdx = sessions.findIndex(s => s.status === 'active');
+      if (activeIdx !== -1) {
+        sessions[activeIdx] = { ...sessions[activeIdx], status: 'error', endedAt: now };
+      }
+
+      await store.updateTask(id, task.version, { phaseSessions: sessions });
+      task.phaseSessions = sessions;
+      task.version += 1;
+    }
+
     return c.json(task);
   } catch (err) {
     return handleWorkflowError(c, err);

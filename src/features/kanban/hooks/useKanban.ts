@@ -188,7 +188,7 @@ export function useKanban() {
 
   /* ── Workflow mutations ── */
 
-  const executeTask = useCallback(async (id: string, options?: { model?: string; thinking?: string }): Promise<KanbanTask> => {
+  const executeTask = useCallback(async (id: string, options?: { model?: string; thinking?: string; context?: string }): Promise<KanbanTask> => {
     const res = await fetch(`/api/kanban/tasks/${encodeURIComponent(id)}/execute`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -266,7 +266,7 @@ export function useKanban() {
 
   const statusCounts = useMemo(() => {
     const counts: Record<TaskStatus, number> = {
-      backlog: 0, todo: 0, 'in-progress': 0, review: 0, done: 0, cancelled: 0,
+      backlog: 0, todo: 0, 'in-progress': 0, 'needs-input': 0, blocked: 0, review: 0, done: 0, cancelled: 0,
     };
     for (const t of tasks) counts[t.status] = (counts[t.status] || 0) + 1;
     return counts;

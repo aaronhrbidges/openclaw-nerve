@@ -1,17 +1,19 @@
 // Kanban type contracts — Frozen v1
 // Change policy: coordinator approval + issue-file sync required.
 
-export type TaskStatus = 'backlog' | 'todo' | 'in-progress' | 'review' | 'done' | 'cancelled';
+export type TaskStatus = 'backlog' | 'todo' | 'in-progress' | 'needs-input' | 'blocked' | 'review' | 'done' | 'cancelled';
 export type TaskPriority = 'critical' | 'high' | 'normal' | 'low';
 
 /** Canonical column display order. Single source of truth for board + header. */
-export const COLUMNS: TaskStatus[] = ['backlog', 'todo', 'in-progress', 'review', 'done'];
+export const COLUMNS: TaskStatus[] = ['backlog', 'todo', 'blocked', 'in-progress', 'needs-input', 'review', 'done'];
 
 /** Human-readable column labels. */
 export const COLUMN_LABELS: Record<TaskStatus, string> = {
   backlog: 'Backlog',
-  todo: 'To Do',
+  todo: 'Ready',
   'in-progress': 'In Progress',
+  'needs-input': 'Needs Input',
+  blocked: 'Blocked',
   review: 'Review',
   done: 'Done',
   cancelled: 'Cancelled',
@@ -32,6 +34,16 @@ export interface TaskRunLink {
   endedAt?: number;
   status: 'running' | 'done' | 'error' | 'aborted';
   error?: string;
+}
+
+export type SddPhase = 'specify' | 'plan' | 'implement';
+
+export interface PhaseSession {
+  phase: SddPhase;
+  sessionKey: string;
+  startedAt: number;
+  endedAt?: number;
+  status: 'active' | 'paused' | 'completed' | 'error';
 }
 
 export interface KanbanTask {
@@ -57,4 +69,6 @@ export interface KanbanTask {
   estimateMin?: number;
   actualMin?: number;
   feedback: TaskFeedback[];
+  phaseSessions?: PhaseSession[];
+  currentPhase?: SddPhase;
 }

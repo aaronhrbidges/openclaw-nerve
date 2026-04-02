@@ -41,6 +41,8 @@ interface ChatPanelProps {
   onToggleMobileTopBar?: () => void;
   /** Whether the mobile top bar is currently hidden. */
   isMobileTopBarHidden?: boolean;
+  /** When true, hide the input bar (for historical/completed sessions). */
+  readOnly?: boolean;
 }
 
 export interface ChatPanelHandle {
@@ -55,7 +57,7 @@ export const ChatPanel = forwardRef<ChatPanelHandle, ChatPanelProps>(function Ch
   lastEventTimestamp = 0, currentToolDescription = null, activityLog = [],
   onWakeWordState, onReset, searchOpen, onSearchClose, id, agentName = 'Agent',
   loadMore, hasMore = false, onToggleFileBrowser, isFileBrowserCollapsed = true,
-  onToggleMobileTopBar, isMobileTopBarHidden = false,
+  onToggleMobileTopBar, isMobileTopBarHidden = false, readOnly = false,
 }, ref) {
   const scrollRef = useRef<HTMLDivElement>(null);
   const messageRefs = useRef<Map<number, HTMLDivElement>>(new Map());
@@ -366,13 +368,15 @@ export const ChatPanel = forwardRef<ChatPanelHandle, ChatPanelProps>(function Ch
       )}
 
       {/* Input area */}
-      <InputBar
-        ref={inputBarRef}
-        onSend={onSend}
-        isGenerating={isGenerating}
-        onWakeWordState={onWakeWordState}
-        agentName={agentName}
-      />
+      {!readOnly && (
+        <InputBar
+          ref={inputBarRef}
+          onSend={onSend}
+          isGenerating={isGenerating}
+          onWakeWordState={onWakeWordState}
+          agentName={agentName}
+        />
+      )}
 
     </div>
   );
