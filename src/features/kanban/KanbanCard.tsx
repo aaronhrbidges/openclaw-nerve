@@ -148,7 +148,34 @@ function CardContent({
         </div>
       )}
 
-      {/* Row 3: meta line (assignee, run status, time) */}
+      {/* Row 3b: SDD step badge (parsed from last log entry) */}
+      {task.result && (() => {
+        const allSteps = [...task.result.matchAll(/\[sdd:([^\]]+)\]/g)];
+        const allLinks = [...task.result.matchAll(/\[link:([^\]]+)\]/g)];
+        const stepMatch = allSteps.length > 0 ? allSteps[allSteps.length - 1] : null;
+        const linkMatch = allLinks.length > 0 ? allLinks[allLinks.length - 1] : null;
+        if (!stepMatch) return null;
+        return (
+          <div className="flex items-center gap-1.5 mt-1.5 ml-4">
+            <span className="rounded-full border border-amber-500/30 bg-amber-500/10 px-2 py-0.5 text-[10px] font-semibold text-amber-500">
+              {stepMatch[1]}
+            </span>
+            {linkMatch && (
+              <a
+                href={linkMatch[1]}
+                target="_blank"
+                rel="noopener noreferrer"
+                onClick={(e) => e.stopPropagation()}
+                className="text-[10px] text-info hover:underline truncate max-w-[160px]"
+              >
+                Review diff →
+              </a>
+            )}
+          </div>
+        );
+      })()}
+
+      {/* Row 4: meta line (assignee, run status, time) */}
       <div className="flex items-center gap-2 mt-1.5 ml-4 text-[11px] text-muted-foreground">
         {task.assignee && (
           <span className="truncate max-w-[100px]">

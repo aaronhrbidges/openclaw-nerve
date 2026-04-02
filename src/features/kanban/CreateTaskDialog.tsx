@@ -15,8 +15,10 @@ import type { CreateTaskPayload } from './hooks/useKanban';
 
 const STATUS_OPTIONS: { value: TaskStatus; label: string }[] = [
   { value: 'backlog', label: 'Backlog' },
-  { value: 'todo', label: 'To Do' },
+  { value: 'todo', label: 'Ready' },
   { value: 'in-progress', label: 'In Progress' },
+  { value: 'needs-input', label: 'Needs Input' },
+  { value: 'blocked', label: 'Blocked' },
   { value: 'review', label: 'Review' },
 ];
 

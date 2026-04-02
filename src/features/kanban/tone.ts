@@ -23,6 +23,16 @@ export const TASK_STATUS_TONE: Record<
     badgeClass: 'border-primary/30 bg-primary/10 text-primary',
     statClass: 'border-primary/24 bg-primary/8 text-primary',
   },
+  'needs-input': {
+    textClass: 'text-amber-500',
+    badgeClass: 'border-amber-500/30 bg-amber-500/10 text-amber-500',
+    statClass: 'border-amber-500/24 bg-amber-500/8 text-amber-500',
+  },
+  blocked: {
+    textClass: 'text-destructive',
+    badgeClass: 'border-destructive/30 bg-destructive/10 text-destructive',
+    statClass: 'border-destructive/24 bg-destructive/8 text-destructive',
+  },
   review: {
     textClass: 'text-orange',
     badgeClass: 'border-orange/30 bg-orange/10 text-orange',
