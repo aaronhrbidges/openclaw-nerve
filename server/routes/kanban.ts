@@ -928,28 +928,48 @@ app.post('/api/kanban/tasks/:id/approve', rateLimitGeneral, async (c) => {
     const task = await store.approveTask(id, parsed.data.note, 'operator');
 
     // Mark current phase session as completed and advance phase
+    const now = Date.now();
+    const ts = new Date(now).toISOString();
+    let completedPhase: SddPhase | undefined;
+    let nextPhase: SddPhase | undefined;
+
     if (task.phaseSessions?.length) {
-      const now = Date.now();
       const sessions = [...task.phaseSessions];
       const activeIdx = sessions.findIndex(s => s.status === 'active');
       if (activeIdx !== -1) {
+        completedPhase = sessions[activeIdx].phase;
         sessions[activeIdx] = { ...sessions[activeIdx], status: 'completed', endedAt: now };
+      } else {
+        completedPhase = task.currentPhase ?? undefined;
       }
 
       // Determine next phase
       const SDD_PHASES: SddPhase[] = ['specify', 'plan', 'implement'];
-      const completedPhase = activeIdx !== -1 ? sessions[activeIdx].phase : task.currentPhase;
-      let nextPhase: SddPhase | undefined;
       if (completedPhase) {
         const idx = SDD_PHASES.indexOf(completedPhase);
         nextPhase = idx < SDD_PHASES.length - 1 ? SDD_PHASES[idx + 1] : undefined;
       }
 
+      // Append approval to the result log so the card badge updates
+      const PHASE_TO_STEP: Record<string, string> = {
+        specify: 'Spec Review',
+        plan: 'Plan Review',
+        implement: 'PR Review',
+      };
+      const stepName = completedPhase ? PHASE_TO_STEP[completedPhase] || completedPhase : 'Review';
+      const nextStepName = nextPhase
+        ? { plan: 'Planning', implement: 'Implementation' }[nextPhase] || nextPhase
+        : 'Complete';
+      const logEntry = `\n[${ts}] [sdd:${stepName}] Approved. Proceeding to ${nextStepName}.`;
+      const updatedResult = (task.result || '') + logEntry;
+
       await store.updateTask(id, task.version, {
         phaseSessions: sessions,
         currentPhase: nextPhase ?? task.currentPhase,
+        result: updatedResult,
       });
       task.phaseSessions = sessions;
+      task.result = updatedResult;
       if (nextPhase) task.currentPhase = nextPhase;
       task.version += 1;
     }
@@ -992,6 +1012,7 @@ app.post('/api/kanban/tasks/:id/reject', rateLimitGeneral, async (c) => {
 
     if (task.phaseSessions?.length) {
       const now = Date.now();
+      const ts = new Date(now).toISOString();
       const sessions = [...task.phaseSessions];
       const activeIdx = sessions.findIndex(s => s.status === 'active');
       if (activeIdx !== -1) {
@@ -1003,12 +1024,25 @@ app.post('/api/kanban/tasks/:id/reject', rateLimitGeneral, async (c) => {
           ? currentPhase
           : RESET_PHASE_MAP[parsed.data.resetTo] || currentPhase;
 
+        // Append rejection to the result log
+        const PHASE_TO_STEP: Record<string, string> = {
+          specify: 'Spec Review',
+          plan: 'Plan Review',
+          implement: 'PR Review',
+        };
+        const stepName = PHASE_TO_STEP[currentPhase] || currentPhase;
+        const resetLabel = parsed.data.resetTo === 'fix' ? 'Fix in place' : `Reset to ${parsed.data.resetTo.replace('revise-', '')}`;
+        const logEntry = `\n[${ts}] [sdd:${stepName}] REJECTED: ${parsed.data.note} (${resetLabel})`;
+        const updatedResult = (task.result || '') + logEntry;
+
         await store.updateTask(id, task.version, {
           phaseSessions: sessions,
           currentPhase: resetPhase,
+          result: updatedResult,
         });
         task.phaseSessions = sessions;
         task.currentPhase = resetPhase;
+        task.result = updatedResult;
         task.version += 1;
       } else {
         await store.updateTask(id, task.version, { phaseSessions: sessions });

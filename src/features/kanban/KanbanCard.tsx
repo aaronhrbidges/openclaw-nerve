@@ -148,19 +148,42 @@ function CardContent({
         </div>
       )}
 
-      {/* Row 3b: SDD step badge (parsed from last log entry) */}
-      {task.result && (() => {
-        const allSteps = [...task.result.matchAll(/\[sdd:([^\]]+)\]/g)];
-        const allLinks = [...task.result.matchAll(/\[link:([^\]]+)\]/g)];
+      {/* Row 3b: SDD step badge (parsed from last log entry + currentPhase) */}
+      {(task.result || task.currentPhase) && (() => {
+        const allSteps = task.result ? [...task.result.matchAll(/\[sdd:([^\]]+)\]/g)] : [];
+        const allLinks = task.result ? [...task.result.matchAll(/\[link:([^\]]+)\]/g)] : [];
         const stepMatch = allSteps.length > 0 ? allSteps[allSteps.length - 1] : null;
         const linkMatch = allLinks.length > 0 ? allLinks[allLinks.length - 1] : null;
-        if (!stepMatch) return null;
+
+        // Use currentPhase as the display label when it's more up-to-date than the log
+        const PHASE_LABELS: Record<string, string> = {
+          specify: 'Specifying',
+          plan: 'Planning',
+          implement: 'Implementing',
+        };
+        const phaseLabel = task.currentPhase ? PHASE_LABELS[task.currentPhase] || task.currentPhase : null;
+        const logLabel = stepMatch?.[1];
+
+        // Show phase label if it indicates a different (newer) state than the log
+        const isApproved = logLabel?.includes('Approved');
+        const displayLabel = (isApproved && phaseLabel) ? phaseLabel : logLabel || phaseLabel;
+
+        if (!displayLabel) return null;
+
+        // Pick tone: amber for waiting, green for approved/proceeding, red for rejected
+        const isRejected = logLabel?.includes('REJECTED');
+        const toneClass = isRejected
+          ? 'border-destructive/30 bg-destructive/10 text-destructive'
+          : isApproved
+            ? 'border-emerald-500/30 bg-emerald-500/10 text-emerald-500'
+            : 'border-amber-500/30 bg-amber-500/10 text-amber-500';
+
         return (
           <div className="flex items-center gap-1.5 mt-1.5 ml-4">
-            <span className="rounded-full border border-amber-500/30 bg-amber-500/10 px-2 py-0.5 text-[10px] font-semibold text-amber-500">
-              {stepMatch[1]}
+            <span className={`rounded-full border px-2 py-0.5 text-[10px] font-semibold ${toneClass}`}>
+              {displayLabel}
             </span>
-            {linkMatch && (
+            {linkMatch && !isApproved && (
               <a
                 href={linkMatch[1]}
                 target="_blank"
