@@ -3,7 +3,8 @@ import { Clock, Play, CheckCircle2, AlertCircle, XCircle } from 'lucide-react';
 import { useSortable } from '@dnd-kit/sortable';
 import { CSS } from '@dnd-kit/utilities';
 import type { KanbanTask } from './types';
-import { getTaskPriorityLabel, getTaskPriorityTone, getTaskRunStatus, getTaskRunTone } from './tone';
+import { getTaskPriorityLabel, getTaskPriorityTone, getTaskRunStatus, getTaskRunTone, getTaskStatus, getTaskStatusTone } from './tone';
+import { getSddBadgeInfo } from './lib/sdd';
 
 /* ── Run status indicators ── */
 function RunBadge({ status }: { status: string }) {
@@ -148,50 +149,42 @@ function CardContent({
         </div>
       )}
 
-      {/* Row 3b: SDD step badge (parsed from last log entry + currentPhase) */}
-      {(task.result || task.currentPhase) && (() => {
-        const allSteps = task.result ? [...task.result.matchAll(/\[sdd:([^\]]+)\]/g)] : [];
-        const allLinks = task.result ? [...task.result.matchAll(/\[link:([^\]]+)\]/g)] : [];
-        const stepMatch = allSteps.length > 0 ? allSteps[allSteps.length - 1] : null;
-        const linkMatch = allLinks.length > 0 ? allLinks[allLinks.length - 1] : null;
+      {/* Row 3b: SDD step badge + task status */}
+      {(() => {
+        const badge = getSddBadgeInfo(task);
+        const statusTone = getTaskStatusTone(task.status);
+        const statusLabel = { 'in-progress': 'In Progress', 'needs-input': 'Needs Input', review: 'Review', blocked: 'Blocked' }[task.status];
 
-        // Use currentPhase as the display label when it's more up-to-date than the log
-        const PHASE_LABELS: Record<string, string> = {
-          specify: 'Specifying',
-          plan: 'Planning',
-          implement: 'Implementing',
+        if (!badge && !statusLabel) return null;
+
+        const toneClasses: Record<string, string> = {
+          waiting: 'border-amber-500/30 bg-amber-500/10 text-amber-500',
+          approved: 'border-emerald-500/30 bg-emerald-500/10 text-emerald-500',
+          rejected: 'border-destructive/30 bg-destructive/10 text-destructive',
+          active: 'border-info/30 bg-info/10 text-info',
         };
-        const phaseLabel = task.currentPhase ? PHASE_LABELS[task.currentPhase] || task.currentPhase : null;
-        const logLabel = stepMatch?.[1];
-
-        // Show phase label if it indicates a different (newer) state than the log
-        const isApproved = logLabel?.includes('Approved');
-        const displayLabel = (isApproved && phaseLabel) ? phaseLabel : logLabel || phaseLabel;
-
-        if (!displayLabel) return null;
-
-        // Pick tone: amber for waiting, green for approved/proceeding, red for rejected
-        const isRejected = logLabel?.includes('REJECTED');
-        const toneClass = isRejected
-          ? 'border-destructive/30 bg-destructive/10 text-destructive'
-          : isApproved
-            ? 'border-emerald-500/30 bg-emerald-500/10 text-emerald-500'
-            : 'border-amber-500/30 bg-amber-500/10 text-amber-500';
 
         return (
           <div className="flex items-center gap-1.5 mt-1.5 ml-4">
-            <span className={`rounded-full border px-2 py-0.5 text-[10px] font-semibold ${toneClass}`}>
-              {displayLabel}
-            </span>
-            {linkMatch && !isApproved && (
+            {statusLabel && (
+              <span className={`rounded-full border border-border/50 bg-muted/30 px-2 py-0.5 text-[10px] font-medium ${statusTone.textClass}`}>
+                {statusLabel}
+              </span>
+            )}
+            {badge && (
+              <span className={`rounded-full border px-2 py-0.5 text-[10px] font-semibold ${toneClasses[badge.tone]}`}>
+                {badge.label}
+              </span>
+            )}
+            {badge?.link && (
               <a
-                href={linkMatch[1]}
+                href={badge.link}
                 target="_blank"
                 rel="noopener noreferrer"
                 onClick={(e) => e.stopPropagation()}
-                className="text-[10px] text-info hover:underline truncate max-w-[160px]"
+                className="text-[10px] text-info hover:underline truncate max-w-[140px]"
               >
-                Review diff →
+                Review →
               </a>
             )}
           </div>

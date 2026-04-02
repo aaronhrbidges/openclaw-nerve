@@ -24,6 +24,7 @@ import {
 } from '../lib/kanban-store.js';
 import { invokeGatewayTool } from '../lib/gateway-client.js';
 import { parseKanbanMarkers, stripKanbanMarkers } from '../lib/parseMarkers.js';
+import { PHASE_GATE_STEP, PHASE_ACTIVE_LABEL, SDD_PHASES } from '../../src/features/kanban/lib/sdd.js';
 import type {
   TaskStatus,
   TaskPriority,
@@ -735,7 +736,7 @@ app.post('/api/kanban/tasks/:id/execute', rateLimitGeneral, async (c) => {
     const isSddTask = labels.some((l: string) => /^phase-|^product|^infra/.test(l));
 
     // ── Phase determination for SDD tasks ──
-    const SDD_PHASES: SddPhase[] = ['specify', 'plan', 'implement'];
+    // SDD_PHASES imported from shared lib/sdd.ts
     let phase: SddPhase | undefined;
     if (isSddTask) {
       const sessions = task.phaseSessions || [];
@@ -944,21 +945,16 @@ app.post('/api/kanban/tasks/:id/approve', rateLimitGeneral, async (c) => {
       }
 
       // Determine next phase
-      const SDD_PHASES: SddPhase[] = ['specify', 'plan', 'implement'];
+      // SDD_PHASES imported from shared lib/sdd.ts
       if (completedPhase) {
         const idx = SDD_PHASES.indexOf(completedPhase);
         nextPhase = idx < SDD_PHASES.length - 1 ? SDD_PHASES[idx + 1] : undefined;
       }
 
       // Append approval to the result log so the card badge updates
-      const PHASE_TO_STEP: Record<string, string> = {
-        specify: 'Spec Review',
-        plan: 'Plan Review',
-        implement: 'PR Review',
-      };
-      const stepName = completedPhase ? PHASE_TO_STEP[completedPhase] || completedPhase : 'Review';
+      const stepName = completedPhase ? PHASE_GATE_STEP[completedPhase] || completedPhase : 'Review';
       const nextStepName = nextPhase
-        ? { plan: 'Planning', implement: 'Implementation' }[nextPhase] || nextPhase
+        ? PHASE_ACTIVE_LABEL[nextPhase] || nextPhase
         : 'Complete';
       const logEntry = `\n[${ts}] [sdd:${stepName}] Approved. Proceeding to ${nextStepName}.`;
       const updatedResult = (task.result || '') + logEntry;
@@ -1025,12 +1021,7 @@ app.post('/api/kanban/tasks/:id/reject', rateLimitGeneral, async (c) => {
           : RESET_PHASE_MAP[parsed.data.resetTo] || currentPhase;
 
         // Append rejection to the result log
-        const PHASE_TO_STEP: Record<string, string> = {
-          specify: 'Spec Review',
-          plan: 'Plan Review',
-          implement: 'PR Review',
-        };
-        const stepName = PHASE_TO_STEP[currentPhase] || currentPhase;
+        const stepName = PHASE_GATE_STEP[currentPhase as SddPhase] || currentPhase;
         const resetLabel = parsed.data.resetTo === 'fix' ? 'Fix in place' : `Reset to ${parsed.data.resetTo.replace('revise-', '')}`;
         const logEntry = `\n[${ts}] [sdd:${stepName}] REJECTED: ${parsed.data.note} (${resetLabel})`;
         const updatedResult = (task.result || '') + logEntry;

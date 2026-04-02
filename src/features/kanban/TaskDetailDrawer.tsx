@@ -8,6 +8,7 @@ import { Input } from '@/components/ui/input';
 import { COLUMN_LABELS, type KanbanTask, type TaskStatus, type TaskPriority, type SddPhase } from './types';
 import type { UpdateTaskPayload, VersionConflictError } from './hooks/useKanban';
 import { getTaskPriorityLabel, getTaskPriorityTone, getTaskRunTone, getTaskStatusTone, getTaskPriority, getTaskStatus } from './tone';
+import { parseResultLog, SDD_PROGRESS_STEPS } from './lib/sdd';
 import { useTaskChat } from './hooks/useTaskChat';
 import { ChatPanel } from '@/features/chat/ChatPanel';
 
@@ -535,25 +536,8 @@ export function TaskDetailDrawer({ task, onClose, onUpdate, onDelete, onExecute,
                 )}
 
                 {task.result && (() => {
-                  const sddSteps = [
-                    { key: 'Clarify', label: 'Clarify' },
-                    { key: 'Spec Review', label: 'Spec Review' },
-                    { key: 'Plan Review', label: 'Plan Review' },
-                    { key: 'Implementing', label: 'Implementing' },
-                    { key: 'PR Review', label: 'PR Review' },
-                  ];
-                  // Parse the LAST sdd tag and link (append-only log, latest is current)
-                  const allSteps = [...task.result.matchAll(/\[sdd:([^\]]+)\]/g)];
-                  const allLinks = [...task.result.matchAll(/\[link:([^\]]+)\]/g)];
-                  const currentStep = allSteps.length > 0 ? allSteps[allSteps.length - 1][1] : null;
-                  const linkUrl = allLinks.length > 0 ? allLinks[allLinks.length - 1][1] : null;
-                  const isSdd = Boolean(currentStep);
-
-                  // Parse log entries: lines starting with [timestamp]
-                  const logLines = task.result.split('\n').filter(l => l.match(/^\[[\dT:\-Z]+\]/));
-                  // Clean display: strip tags from each line for readability
-                  const cleanLine = (line: string) =>
-                    line.replace(/\[sdd:[^\]]+\]/g, '').replace(/\[link:[^\]]+\]/g, '').trim();
+                  const parsed = parseResultLog(task.result);
+                  const isSdd = Boolean(parsed.lastStep);
 
                   return (
                     <div className="cockpit-note space-y-3">
@@ -563,10 +547,10 @@ export function TaskDetailDrawer({ task, onClose, onUpdate, onDelete, onExecute,
                           <div className="rounded-2xl border border-border/60 bg-background/45 p-3">
                             <table className="w-full text-xs">
                               <tbody>
-                                {sddSteps.map((step) => {
-                                  const isCurrent = currentStep === step.key;
-                                  const stepIdx = sddSteps.findIndex(s => s.key === step.key);
-                                  const currentIdx = sddSteps.findIndex(s => s.key === currentStep);
+                                {SDD_PROGRESS_STEPS.map((step) => {
+                                  const isCurrent = parsed.lastStep === step.key;
+                                  const stepIdx = SDD_PROGRESS_STEPS.findIndex(s => s.key === step.key);
+                                  const currentIdx = SDD_PROGRESS_STEPS.findIndex(s => s.key === parsed.lastStep);
                                   const isDone = currentIdx > stepIdx;
                                   return (
                                     <tr key={step.key} className={isCurrent ? 'text-amber-500 font-semibold' : isDone ? 'text-green' : 'text-muted-foreground'}>
@@ -575,9 +559,9 @@ export function TaskDetailDrawer({ task, onClose, onUpdate, onDelete, onExecute,
                                       </td>
                                       <td className="py-0.5">{step.label}</td>
                                       <td className="py-0.5 text-right">
-                                        {isCurrent && linkUrl && (
+                                        {isCurrent && parsed.lastLink && (
                                           <a
-                                            href={linkUrl}
+                                            href={parsed.lastLink}
                                             target="_blank"
                                             rel="noopener noreferrer"
                                             className="text-info hover:underline"
@@ -596,38 +580,30 @@ export function TaskDetailDrawer({ task, onClose, onUpdate, onDelete, onExecute,
                         </>
                       )}
 
-                      {logLines.length > 0 && (
+                      {parsed.entries.length > 0 && (
                         <>
                           <h4 className="cockpit-field-label">Activity Log</h4>
                           <div className="rounded-2xl border border-border/60 bg-background/45 p-2 space-y-1 max-h-60 overflow-y-auto">
-                            {logLines.map((line, i) => {
-                              const tsMatch = line.match(/^\[([\dT:\-Z]+)\]/);
-                              const ts = tsMatch ? tsMatch[1] : '';
-                              const rest = cleanLine(line.replace(/^\[[\dT:\-Z]+\]\s*/, ''));
-                              const isRejected = rest.includes('REJECTED');
-                              const isApproved = rest.includes('Approved');
-                              const linkInLine = line.match(/\[link:([^\]]+)\]/)?.[1];
-                              return (
-                                <div key={i} className={`flex items-start gap-2 text-[11px] ${isRejected ? 'text-destructive' : isApproved ? 'text-green' : 'text-muted-foreground'}`}>
-                                  <span className="shrink-0 font-mono text-[10px] opacity-60">{ts.replace('T', ' ').replace('Z', '')}</span>
-                                  <span className="flex-1">{rest}</span>
-                                  {linkInLine && (
-                                    <a href={linkInLine} target="_blank" rel="noopener noreferrer" onClick={e => e.stopPropagation()} className="shrink-0 text-info hover:underline text-[10px]">
-                                      diff →
-                                    </a>
-                                  )}
-                                </div>
-                              );
-                            })}
+                            {parsed.entries.map((entry, i) => (
+                              <div key={i} className={`flex items-start gap-2 text-[11px] ${entry.isRejected ? 'text-destructive' : entry.isApproved ? 'text-green' : 'text-muted-foreground'}`}>
+                                <span className="shrink-0 font-mono text-[10px] opacity-60">{entry.timestamp.replace('T', ' ').replace('Z', '')}</span>
+                                <span className="flex-1">{entry.text}</span>
+                                {entry.link && (
+                                  <a href={entry.link} target="_blank" rel="noopener noreferrer" onClick={e => e.stopPropagation()} className="shrink-0 text-info hover:underline text-[10px]">
+                                    diff →
+                                  </a>
+                                )}
+                              </div>
+                            ))}
                           </div>
                         </>
                       )}
 
-                      {!logLines.length && (
+                      {parsed.entries.length === 0 && (
                         <>
                           <h4 className="cockpit-field-label">Result</h4>
                           <div className="whitespace-pre-wrap rounded-2xl border border-border/60 bg-background/45 p-3 text-xs text-foreground">
-                            {task.result.replace(/\[sdd:[^\]]+\]/g, '').replace(/\[link:[^\]]+\]/g, '').trim()}
+                            {parsed.entries.length === 0 ? task.result : ''}
                           </div>
                         </>
                       )}
