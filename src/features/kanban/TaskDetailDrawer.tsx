@@ -94,7 +94,7 @@ interface TaskDetailDrawerProps {
   onDelete: (id: string) => Promise<void>;
   onExecute?: (id: string, options?: { model?: string; thinking?: string; context?: string }) => Promise<KanbanTask>;
   onApprove?: (id: string, note?: string) => Promise<KanbanTask>;
-  onReject?: (id: string, note: string) => Promise<KanbanTask>;
+  onReject?: (id: string, note: string, resetTo?: 'fix' | 'revise-plan' | 'revise-spec') => Promise<KanbanTask>;
   onAbort?: (id: string, note?: string) => Promise<KanbanTask>;
 }
 
@@ -232,6 +232,7 @@ export function TaskDetailDrawer({ task, onClose, onUpdate, onDelete, onExecute,
   const [workflowLoading, setWorkflowLoading] = useState<string | null>(null);
   const [rejectNote, setRejectNote] = useState('');
   const [showRejectInput, setShowRejectInput] = useState(false);
+  const [rejectResetTo, setRejectResetTo] = useState<'fix' | 'revise-plan' | 'revise-spec'>('fix');
   const [executeContext, setExecuteContext] = useState('');
 
   const handleExecute = useCallback(async () => {
@@ -273,15 +274,16 @@ export function TaskDetailDrawer({ task, onClose, onUpdate, onDelete, onExecute,
     setWorkflowLoading('reject');
     setError(null);
     try {
-      await onReject(task.id, rejectNote.trim());
+      await onReject(task.id, rejectNote.trim(), rejectResetTo);
       setShowRejectInput(false);
       setRejectNote('');
+      setRejectResetTo('fix');
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Reject failed');
     } finally {
       setWorkflowLoading(null);
     }
-  }, [task, onReject, workflowLoading, showRejectInput, rejectNote]);
+  }, [task, onReject, workflowLoading, showRejectInput, rejectNote, rejectResetTo]);
 
   const handleAbort = useCallback(async () => {
     if (!task || !onAbort || workflowLoading) return;
@@ -684,11 +686,32 @@ export function TaskDetailDrawer({ task, onClose, onUpdate, onDelete, onExecute,
                     onChange={e => setRejectNote(e.target.value)}
                     placeholder="Rejection reason (required)…"
                     className="cockpit-input min-h-[80px] max-h-[200px] w-full resize-y rounded-xl border border-border/60 bg-background/45 px-3 py-2 text-sm text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-ring"
-                    onKeyDown={e => { if (e.key === 'Escape') { setShowRejectInput(false); setRejectNote(''); } }}
+                    onKeyDown={e => { if (e.key === 'Escape') { setShowRejectInput(false); setRejectNote(''); setRejectResetTo('fix'); } }}
                     autoFocus
                   />
+                  <div className="flex items-center gap-1.5 text-xs text-muted-foreground">
+                    <span className="shrink-0">Reset to:</span>
+                    {([
+                      ['fix', 'Fix in place'],
+                      ['revise-plan', 'Revise plan'],
+                      ['revise-spec', 'Revise spec'],
+                    ] as const).map(([value, label]) => (
+                      <button
+                        key={value}
+                        type="button"
+                        onClick={() => setRejectResetTo(value)}
+                        className={`rounded-md px-2 py-0.5 transition-colors ${
+                          rejectResetTo === value
+                            ? 'bg-destructive/15 text-destructive font-medium'
+                            : 'bg-muted/40 text-muted-foreground hover:bg-muted/60'
+                        }`}
+                      >
+                        {label}
+                      </button>
+                    ))}
+                  </div>
                   <div className="flex items-center gap-2 justify-end">
-                    <Button size="xs" variant="outline" onClick={() => { setShowRejectInput(false); setRejectNote(''); }}>
+                    <Button size="xs" variant="outline" onClick={() => { setShowRejectInput(false); setRejectNote(''); setRejectResetTo('fix'); }}>
                       Cancel
                     </Button>
                     <Button size="xs" variant="outline" onClick={handleReject} disabled={!rejectNote.trim()} className="border-destructive/30 bg-destructive/8 text-destructive hover:bg-destructive/12">

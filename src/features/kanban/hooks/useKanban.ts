@@ -218,11 +218,11 @@ export function useKanban() {
     return task;
   }, [fetchTasks]);
 
-  const rejectTask = useCallback(async (id: string, note: string): Promise<KanbanTask> => {
+  const rejectTask = useCallback(async (id: string, note: string, resetTo?: 'fix' | 'revise-plan' | 'revise-spec'): Promise<KanbanTask> => {
     const res = await fetch(`/api/kanban/tasks/${encodeURIComponent(id)}/reject`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ note }),
+      body: JSON.stringify({ note, resetTo: resetTo || 'fix' }),
     });
     if (!res.ok) {
       const body = await res.json().catch(() => ({}));
