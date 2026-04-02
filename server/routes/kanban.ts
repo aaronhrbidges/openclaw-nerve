@@ -775,6 +775,13 @@ app.post('/api/kanban/tasks/:id/execute', rateLimitGeneral, async (c) => {
       task.version += 1;
     }
 
+    // Extract gh:N issue number and risk level from labels
+    const ghLabel = labels.find((l: string) => l.startsWith('gh:'));
+    const ghIssue = ghLabel ? ghLabel.split(':')[1] : '';
+    const riskLabel = labels.find((l: string) => l.startsWith('risk:'));
+    const risk = riskLabel ? riskLabel.split(':')[1] : 'full';
+    const workId = ghIssue || id;
+
     let taskPrompt: string;
     if (isSddTask) {
       taskPrompt = [
@@ -782,18 +789,34 @@ app.post('/api/kanban/tasks/:id/execute', rateLimitGeneral, async (c) => {
         ``,
         `## Task: ${task.title}`,
         `## Task ID: ${id}`,
+        `## GitHub Issue: ${ghIssue ? `#${ghIssue}` : '(none — pipeline will create one)'}`,
         `## Current Phase: ${phase}`,
+        `## Risk Level: ${risk}`,
         `## Description: ${taskDescription}`,
+        `## Labels: ${labels.join(', ')}`,
         ``,
         `## Instructions`,
         ``,
-        `1. Read AGENTS.md — it has the full Lobster integration instructions.`,
+        `1. Read the "For Spawned Agents" section in AGENTS.md for architecture rules and artifact locations.`,
         `2. Check dependencies: if task labels include depends:phase-X, verify those are done on the board.`,
         `   If not done: [kanban:update]{"id":"${id}","status":"blocked","result":"Blocked by Phase X."}[/kanban:update] and STOP.`,
-        `3. Create or switch to the worktree: ../work-{issue}`,
+        `3. Create or switch to the worktree:`,
+        `   \`\`\`bash`,
+        `   if [ -d "../work-${workId}" ]; then`,
+        `     cd "../work-${workId}"`,
+        `   else`,
+        `     git fetch origin main`,
+        `     git worktree add "../work-${workId}" origin/main`,
+        `     cd "../work-${workId}"`,
+        `   fi`,
+        `   \`\`\``,
         `4. Check if a resume token exists at /tmp/sdd-resume-${id}.token`,
-        `   - If yes: lobster resume --token "$(cat /tmp/sdd-resume-${id}.token)" --approve yes`,
-        `   - If no: lobster run --mode tool --file .lobster/sdd-pipeline.lobster --args-json with task details`,
+        `   - If yes: \`lobster resume --token "$(cat /tmp/sdd-resume-${id}.token)" --approve yes\``,
+        `   - If no:`,
+        `     \`\`\`bash`,
+        `     lobster run --mode tool --file .lobster/sdd-pipeline.lobster \\`,
+        `       --args-json '{"description":"${task.title.replace(/'/g, "\\'")}","issue":"${ghIssue}","risk":"${risk}","workdir":"../work-${workId}","task_id":"${id}"}'`,
+        `     \`\`\``,
         `5. When Lobster returns needs_approval:`,
         `   - Parse sdd_step, branch, link from the output`,
         `   - Save the resumeToken to /tmp/sdd-resume-${id}.token`,
