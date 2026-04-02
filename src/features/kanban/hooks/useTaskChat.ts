@@ -109,7 +109,7 @@ export function useTaskChat({ task, phase }: UseTaskChatOptions): UseTaskChatRet
         case 'chat_delta': {
           if (classified.chatPayload) {
             const delta = extractStreamDelta(classified.chatPayload);
-            if (delta.cleaned) {
+            if (delta?.cleaned) {
               streamHtmlRef.current += delta.cleaned;
               setStream({ html: streamHtmlRef.current, runId: classified.runId });
             }
