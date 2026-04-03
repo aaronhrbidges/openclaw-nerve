@@ -777,11 +777,9 @@ app.post('/api/kanban/tasks/:id/execute', rateLimitGeneral, async (c) => {
       task.version += 1;
     }
 
-    // Extract gh:N issue number and risk level from labels
+    // Extract gh:N issue number from labels
     const ghLabel = labels.find((l: string) => l.startsWith('gh:'));
     const ghIssue = ghLabel ? ghLabel.split(':')[1] : '';
-    const riskLabel = labels.find((l: string) => l.startsWith('risk:'));
-    const risk = riskLabel ? riskLabel.split(':')[1] : 'full';
     const workId = ghIssue || id;
 
     let taskPrompt: string;
@@ -793,7 +791,7 @@ app.post('/api/kanban/tasks/:id/execute', rateLimitGeneral, async (c) => {
         `## Task ID: ${id}`,
         `## GitHub Issue: ${ghIssue ? `#${ghIssue}` : '(none — pipeline will create one)'}`,
         `## Current Phase: ${phase}`,
-        `## Risk Level: ${risk}`,
+        `## Review Gates: All mandatory (spec, plan, PR)`,
         `## Description: ${taskDescription}`,
         `## Labels: ${labels.join(', ')}`,
         ``,
@@ -836,12 +834,41 @@ app.post('/api/kanban/tasks/:id/execute', rateLimitGeneral, async (c) => {
         `   - If no:`,
         `     \`\`\`bash`,
         `     lobster run --mode tool --file .lobster/sdd-pipeline.lobster \\`,
-        `       --args-json '{"description":"${task.title.replace(/'/g, "\\'")}","issue":"${ghIssue}","risk":"${risk}","workdir":"../work-${workId}","task_id":"${id}"}'`,
+        `       --args-json '{"description":"${task.title.replace(/'/g, "\\'")}","issue":"${ghIssue}","workdir":"../work-${workId}","task_id":"${id}"}'`,
         `     \`\`\``,
         `6. When Lobster returns needs_approval:`,
         `   - Parse sdd_step, branch, link from the output`,
         `   - Save the resumeToken to /tmp/sdd-resume-${id}.token`,
+        ``,
+        `   **Quality check (BEFORE presenting to operator):**`,
+        `   a. Read the generated artifacts (spec.md, test-intent.md, plan.md, tasks.md — whichever exist for this gate).`,
+        `   b. Compare them against Prior Feedback (below) and the PRD (.specify/memory/prd.md).`,
+        `   c. Determine which gate you are at:`,
+        ``,
+        `   **If at spec-review gate:**`,
+        `   - If the spec contradicts, ignores, or fails to incorporate prior feedback:`,
+        `     - Edit the spec/test-intent files directly to fix the issues.`,
+        `     - Run \`git add -A && git commit -m "fix(gh-${ghIssue || 'N'}): incorporate prior feedback"\` and push.`,
+        `     - Keep a detailed record of every change as a diff summary (what Lobster generated vs what you fixed and why).`,
+        `     - You may do this up to 2 times. If still problematic after 2 passes, present with remaining issues noted.`,
+        `   - If no issues found, proceed directly to presenting.`,
+        ``,
+        `   **If at plan-review or implementation gate:**`,
+        `   - If the generated artifacts have issues (contradict feedback, miss requirements, etc.):`,
+        `     - Do NOT edit the files directly.`,
+        `     - Write a corrective prompt describing exactly what needs to change (be specific — quote the problems and the expected fixes).`,
+        `     - Resume Lobster with the corrective prompt: \`lobster resume --token "$(cat /tmp/sdd-resume-${id}.token)" --reject "<your corrective prompt>"\``,
+        `     - This re-triggers the Lobster step with your corrections. Lobster will regenerate the artifacts.`,
+        `     - Re-check the new output. You may retry up to 2 times. If still failing, present to operator with issues noted.`,
+        `   - If no issues found, proceed directly to presenting.`,
+        ``,
+        `   **Present to operator:**`,
         `   - Update kanban: [kanban:update]{"id":"${id}","status":"needs-input","result":"[sdd:{step}][link:{link}] {summary}"}[/kanban:update]`,
+        `   - Present the gate to the operator. Include:`,
+        `     • A summary of what the artifacts cover`,
+        `     • If you made self-corrections at spec gate: a **Corrections Applied** section with a detailed diff of each change (file, what Lobster wrote, what you changed it to, why)`,
+        `     • If you re-triggered plan/implement: a **Retries** section noting what was wrong and what corrective prompt you sent`,
+        `     • The review/compare link`,
         `   - DO NOT stop or exit. Stay alive and wait for the operator to respond in this session.`,
         `   - The operator will review your work and reply here with feedback or approval.`,
         `   - When the operator replies, read their message and respond. Continue the conversation until they are satisfied.`,
@@ -852,7 +879,8 @@ app.post('/api/kanban/tasks/:id/execute', rateLimitGeneral, async (c) => {
         `   - Stay alive for final review conversation. Only stop when the operator approves.`,
         ``,
         `## CRITICAL`,
-        `- Do NOT write specs, plans, or code yourself — Lobster invokes claude --print with the prompt files`,
+        `- At spec gates: you may edit artifacts directly to incorporate prior feedback, but do NOT generate specs from scratch`,
+        `- At plan/implement gates: do NOT edit artifacts directly — use \`lobster resume --reject\` to re-trigger the step with a corrective prompt`,
         `- Do NOT decide step order — Lobster enforces it`,
         `- Do NOT skip gates`,
         `- Do NOT stop or exit at gates — stay alive and wait for operator input in this session`,
