@@ -1,5 +1,5 @@
-import { memo, useState, useEffect } from 'react';
-import { Clock, Play, CheckCircle2, AlertCircle, XCircle } from 'lucide-react';
+import { memo, useState, useEffect, useCallback } from 'react';
+import { Clock, Play, CheckCircle2, AlertCircle, XCircle, Activity } from 'lucide-react';
 import { useSortable } from '@dnd-kit/sortable';
 import { CSS } from '@dnd-kit/utilities';
 import type { KanbanTask } from './types';
@@ -208,6 +208,10 @@ function CardContent({
           </span>
         )}
 
+        {task.run?.status === 'running' && (
+          <AgentProgress taskId={task.id} />
+        )}
+
         {task.dueAt && (
           <span className="inline-flex items-center gap-0.5 ml-auto">
             <Play size={9} className="rotate-90" />
@@ -230,4 +234,37 @@ function ElapsedTime({ since }: { since: number }) {
   const m = Math.floor(seconds / 60);
   const s = seconds % 60;
   return <span>{m}:{s.toString().padStart(2, '0')}</span>;
+}
+
+/* ── Agent progress log tail (polls every 15s) ── */
+function AgentProgress({ taskId }: { taskId: string }) {
+  const [progress, setProgress] = useState<{ lastLine: string | null; ageMinutes: number | null } | null>(null);
+
+  const fetchProgress = useCallback(async () => {
+    try {
+      const res = await fetch(`/api/kanban/tasks/${taskId}/progress`);
+      if (res.ok) setProgress(await res.json());
+    } catch { /* ignore */ }
+  }, [taskId]);
+
+  useEffect(() => {
+    fetchProgress();
+    const id = setInterval(fetchProgress, 15000);
+    return () => clearInterval(id);
+  }, [fetchProgress]);
+
+  if (!progress?.lastLine) return null;
+
+  // Strip the timestamp prefix (HH:MM:SS) if present
+  const text = progress.lastLine.replace(/^\d{2}:\d{2}:\d{2}\s*/, '');
+
+  return (
+    <div className="w-full mt-1 flex items-center gap-1 text-[10px] text-muted-foreground/70 truncate">
+      <Activity size={8} className="shrink-0 text-info/50" />
+      <span className="truncate">{text}</span>
+      {progress.ageMinutes !== null && progress.ageMinutes > 0 && (
+        <span className="shrink-0 text-muted-foreground/50">{progress.ageMinutes}m ago</span>
+      )}
+    </div>
+  );
 }

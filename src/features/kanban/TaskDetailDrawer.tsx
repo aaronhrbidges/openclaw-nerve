@@ -234,6 +234,7 @@ export function TaskDetailDrawer({ task, onClose, onUpdate, onDelete, onExecute,
   const [rejectNote, setRejectNote] = useState('');
   const [showRejectInput, setShowRejectInput] = useState(false);
   const [rejectResetTo, setRejectResetTo] = useState<'fix' | 'revise-plan' | 'revise-spec'>('fix');
+  const [approveNote, setApproveNote] = useState('');
   const [executeContext, setExecuteContext] = useState('');
 
   const handleExecute = useCallback(async () => {
@@ -257,13 +258,14 @@ export function TaskDetailDrawer({ task, onClose, onUpdate, onDelete, onExecute,
     setWorkflowLoading('approve');
     setError(null);
     try {
-      await onApprove(task.id);
+      await onApprove(task.id, approveNote.trim() || undefined);
+      setApproveNote('');
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Approve failed');
     } finally {
       setWorkflowLoading(null);
     }
-  }, [task, onApprove, workflowLoading]);
+  }, [task, onApprove, workflowLoading, approveNote]);
 
   const handleReject = useCallback(async () => {
     if (!task || !onReject || workflowLoading) return;
@@ -303,6 +305,7 @@ export function TaskDetailDrawer({ task, onClose, onUpdate, onDelete, onExecute,
   useEffect(() => {
     setShowRejectInput(false);
     setRejectNote('');
+    setApproveNote('');
     setExecuteContext('');
     setWorkflowLoading(null);
   }, [task?.id]);
@@ -726,6 +729,16 @@ export function TaskDetailDrawer({ task, onClose, onUpdate, onDelete, onExecute,
               )}
               {(task.status === 'review' || task.status === 'needs-input') && (
                 <>
+                  {task.status === 'needs-input' && onApprove && (
+                    <div className="w-full">
+                      <textarea
+                        value={approveNote}
+                        onChange={(e) => setApproveNote(e.target.value)}
+                        placeholder="Feedback or clarification answers (optional — sent with approval)"
+                        className="cockpit-textarea min-h-[80px] w-full text-sm mb-2"
+                      />
+                    </div>
+                  )}
                   {onApprove && (
                     <Button size="xs" variant="outline" onClick={handleApprove} disabled={workflowLoading !== null} className="border-green/30 bg-green/8 text-green hover:bg-green/12">
                       {workflowLoading === 'approve' ? <Loader2 size={12} className="animate-spin" /> : <CheckCircle2 size={12} />}

@@ -143,7 +143,36 @@ function runModelsList(args: string[]): Promise<string> {
  */
 async function execOpenclawModels(): Promise<GatewayModelInfo[]> {
   try {
-    // First: try configured models (respects allowlist)
+    // Fast path: read models directly from OpenClaw config file
+    // This avoids shelling out to `openclaw models list` which can hang
+    // when Bedrock discovery or gateway communication is slow.
+    try {
+      const configPath = `${openclawHome}/.openclaw/openclaw.json`;
+      const { readFileSync } = await import('node:fs');
+      const raw = JSON.parse(readFileSync(configPath, 'utf-8'));
+      const providers = raw?.models?.providers ?? {};
+      const models: GatewayModelInfo[] = [];
+      for (const [providerKey, providerConfig] of Object.entries(providers)) {
+        const pc = providerConfig as Record<string, unknown>;
+        const modelList = (pc.models ?? []) as Array<Record<string, unknown>>;
+        for (const m of modelList) {
+          const id = `${providerKey}/${m.id}`;
+          models.push({
+            id,
+            label: (m.name as string) || (m.id as string) || id,
+            provider: providerKey,
+          });
+        }
+      }
+      if (models.length > 0) {
+        console.log(`[gateway/models] Loaded ${models.length} models from config file`);
+        return models.sort((a, b) => a.id.localeCompare(b.id));
+      }
+    } catch (fileErr) {
+      console.warn('[gateway/models] Config file read failed, falling back to CLI:', (fileErr as Error).message);
+    }
+
+    // Fallback: try CLI (may be slow)
     // Always include configured models regardless of `available` flag —
     // if the user configured them, they should appear.
     const configured = await runModelsList(['--json']);

@@ -15,6 +15,7 @@ import { serve } from '@hono/node-server';
 import app from './app.js';
 import { releaseWhisperContext } from './services/whisper-local.js';
 import { config, validateConfig, printStartupBanner, probeGateway } from './lib/config.js';
+import { rehydrateKanbanPollers } from './routes/kanban.js';
 import { setupWebSocketProxy, closeAllWebSockets } from './lib/ws-proxy.js';
 import { startFileWatcher, stopFileWatcher } from './lib/file-watcher.js';
 
@@ -58,6 +59,9 @@ setupWebSocketProxy(httpServer as unknown as import('node:http').Server);
 
 // Non-blocking gateway health check
 probeGateway();
+
+// Re-attach pollers for any in-progress kanban runs that survived a restart
+setTimeout(() => rehydrateKanbanPollers(), 5_000);
 
 // ── HTTPS server (for secure context — microphone access, WSS proxy) ─
 
