@@ -32,6 +32,7 @@ import type {
   ProposalStatus,
   SddPhase,
   PhaseSession,
+  SddStatusPhase,
 } from '../lib/kanban-store.js';
 
 const app = new Hono();
@@ -73,13 +74,36 @@ export function cleanupKanbanPollers(): void {
   activePollTimers.clear();
 }
 
+/** Re-attach pollers for any tasks with run.status === 'running' on startup. */
+export async function rehydrateKanbanPollers(): Promise<void> {
+  try {
+    const store = getKanbanStore();
+    const { items } = await store.listTasks({ limit: 200 });
+    const running = items.filter((t) => {
+      return t.status === 'in-progress' && t.run?.status === 'running' && t.run?.sessionKey;
+    });
+    for (const task of running) {
+      // The poller matches by spawn label, which is kb-{id} (no timestamp).
+      // run.sessionKey has a timestamp suffix, so strip it for the label.
+      const label = `kb-${task.id}`;
+      console.log(`[kanban] Rehydrating poller for task ${task.id} (label: ${label})`);
+      pollSessionCompletion(store, task.id, label);
+    }
+    if (running.length > 0) {
+      console.log(`[kanban] Rehydrated ${running.length} poller(s)`);
+    }
+  } catch (err) {
+    console.error('[kanban] Failed to rehydrate pollers:', err);
+  }
+}
+
 /** Poll gateway subagents for a kanban run label until it finishes, then complete the run. */
 function pollSessionCompletion(
   store: ReturnType<typeof getKanbanStore>,
   taskId: string,
   label: string,
   intervalMs = 5_000,
-  maxAttempts = 720, // 60 minutes max
+  maxAttempts = 1500, // ~125 minutes (matches 120min agent timeout with headroom)
 ): void {
   let attempts = 0;
 
@@ -140,28 +164,61 @@ function pollSessionCompletion(
           console.warn(`[kanban] Could not fetch history for ${label}:`, err);
         }
 
-        // Parse kanban markers from the result and create proposals
+        // Parse kanban markers from the result and auto-apply them.
+        // Agent-spawned sessions are authorized executors — their kanban
+        // updates should not require proposal confirmation.
         const markers = parseKanbanMarkers(resultText);
+        let markerApplied = false;
         for (const marker of markers) {
           try {
-            await store.createProposal({
-              type: marker.type,
-              payload: marker.payload,
-              sourceSessionKey: label,
-              proposedBy: `agent:${label}`,
-            });
+            if (marker.type === 'update' && marker.payload.id === taskId) {
+              // Direct update for this task — apply immediately
+              const task = await store.getTask(taskId);
+              const patch: Record<string, unknown> = {};
+              if (marker.payload.status) patch.status = marker.payload.status;
+              if (marker.payload.result) patch.result = marker.payload.result;
+              if (marker.payload.labels) patch.labels = marker.payload.labels;
+              await store.updateTask(taskId, task.version, patch);
+              markerApplied = true;
+              console.log(`[kanban] Auto-applied marker for task ${taskId}: status=${marker.payload.status}`);
+
+              // Update structured sddStatus from marker fields if present
+              const p = marker.payload;
+              if (p.sddPhase) {
+                await store.setSddPhase(taskId, p.sddPhase as any, p.sddSummary as string || undefined);
+              }
+              if (p.sddGate) {
+                await store.setSddGate(taskId, p.sddGate as string, p.sddLink as string || undefined, p.sddSummary as string || undefined);
+              }
+            } else {
+              // Different task or create — use proposal system
+              await store.createProposal({
+                type: marker.type,
+                payload: marker.payload,
+                sourceSessionKey: label,
+                proposedBy: `agent:${label}`,
+              });
+            }
           } catch (err) {
-            console.warn(`[kanban] Failed to create proposal from marker:`, err);
+            console.warn(`[kanban] Failed to apply marker for task ${taskId}:`, err);
           }
         }
 
-        // Strip markers from the stored result text
-        const cleanResult = markers.length > 0 ? stripKanbanMarkers(resultText) : resultText;
-
+        // If a marker already set the task status/result, just complete the run
+        // without overwriting the result with raw agent text.
         console.log(`[kanban] Run completed for task ${taskId} (label: ${label})`);
-        await store.completeRun(taskId, cleanResult).catch((err) => {
-          console.error(`[kanban] Failed to complete run for task ${taskId}:`, err);
-        });
+        if (markerApplied) {
+          // Marker already moved the task (e.g. to needs-input). Just mark run as done.
+          await store.completeRun(taskId).catch((err) => {
+            console.error(`[kanban] Failed to complete run for task ${taskId}:`, err);
+          });
+        } else {
+          // No marker applied — use the stripped text as fallback result
+          const cleanResult = markers.length > 0 ? stripKanbanMarkers(resultText) : resultText;
+          await store.completeRun(taskId, cleanResult).catch((err) => {
+            console.error(`[kanban] Failed to complete run for task ${taskId}:`, err);
+          });
+        }
         return;
       }
 
@@ -199,6 +256,26 @@ const taskActorSchema = z.union([
 const thinkingSchema = z.enum(['off', 'low', 'medium', 'high']);
 
 const sddPhaseSchema = z.enum(['specify', 'plan', 'implement']);
+const sddStatusPhaseSchema = z.enum(['specify', 'plan', 'implement', 'review', 'done']);
+
+const sddEventSchema = z.object({
+  at: z.number(),
+  phase: z.string(),
+  gate: z.string().optional(),
+  action: z.enum(['started', 'gate-reached', 'approved', 'rejected', 'error', 'retry', 'completed']),
+  summary: z.string(),
+  link: z.string().optional(),
+});
+
+const sddStatusSchema = z.object({
+  phase: sddStatusPhaseSchema,
+  gate: z.string().nullable(),
+  gateStatus: z.enum(['pending', 'approved', 'rejected']).nullable(),
+  attempt: z.number(),
+  link: z.string().nullable(),
+  updatedAt: z.number(),
+  history: z.array(sddEventSchema),
+});
 
 const phaseSessionSchema = z.object({
   phase: sddPhaseSchema,
@@ -258,6 +335,7 @@ const updateTaskSchema = z.object({
   feedback: z.array(feedbackSchema).optional(),
   phaseSessions: z.array(phaseSessionSchema).optional().nullable(),
   currentPhase: sddPhaseSchema.optional().nullable(),
+  sddStatus: sddStatusSchema.optional().nullable(),
 });
 
 const reorderSchema = z.object({
@@ -730,58 +808,65 @@ app.post('/api/kanban/tasks/:id/execute', rateLimitGeneral, async (c) => {
 
     const task = await store.executeTask(id, parsed.data, 'operator');
 
-    // Spawn agent session via gateway (fire-and-forget)
+    // Append active-work indicator to result log so the UI shows what's being worked on
     const taskDescription = task.description || task.title;
     const labels = (task.labels || []) as string[];
     const isSddTask = labels.some((l: string) => /^phase-|^product|^infra/.test(l));
 
-    // ── Phase determination for SDD tasks ──
-    // SDD_PHASES imported from shared lib/sdd.ts
-    let phase: SddPhase | undefined;
     if (isSddTask) {
-      const sessions = task.phaseSessions || [];
-      const lastSession = sessions.length > 0 ? sessions[sessions.length - 1] : null;
-
-      if (!lastSession) {
-        phase = 'specify';
-      } else if (lastSession.status === 'error') {
-        // Use currentPhase if set by rejection reset, otherwise retry same phase
-        phase = task.currentPhase || lastSession.phase;
-      } else if (lastSession.status === 'completed') {
-        const idx = SDD_PHASES.indexOf(lastSession.phase);
-        phase = idx < SDD_PHASES.length - 1 ? SDD_PHASES[idx + 1] : 'implement';
+      // Initialize or update structured sddStatus
+      const isRetry = task.sddStatus && task.sddStatus.attempt > 0;
+      if (isRetry) {
+        await store.incrementSddAttempt(id, 'Re-executing after previous run');
+        // Re-read to get updated version
+        const refreshed = await store.getTask(id);
+        task.version = refreshed.version;
+        task.sddStatus = refreshed.sddStatus;
       } else {
-        // Active/paused session — start next phase anyway (shouldn't normally happen)
-        phase = lastSession.phase;
+        // Determine starting phase from existing sddStatus or default to specify
+        const startPhase = task.sddStatus?.phase || 'specify';
+        await store.setSddPhase(id, startPhase === 'done' ? 'specify' : startPhase, 'Execution started');
+        const refreshed = await store.getTask(id);
+        task.version = refreshed.version;
+        task.sddStatus = refreshed.sddStatus;
+        if (task.sddStatus && task.sddStatus.attempt === 0) {
+          task.sddStatus.attempt = 1;
+        }
       }
 
-      // Create PhaseSession record
-      const now = Date.now();
-      const phaseSessionKey = `task:${id}:phase:${phase}`;
-      const phaseSession: PhaseSession = {
-        phase,
-        sessionKey: phaseSessionKey,
-        startedAt: now,
-        status: 'active',
+      // Also keep the legacy result log for backward compat
+      const sddTagRe = /\[sdd:([^\]]+)\]/g;
+      const sddMatches = task.result ? [...task.result.matchAll(sddTagRe)] : [];
+      const lastStep = sddMatches.length > 0 ? sddMatches[sddMatches.length - 1][1] : null;
+      const NEXT_ACTIVE: Record<string, string> = {
+        'Reset': 'Specifying',
+        'Start': 'Specifying',
+        'Clarify': 'Specifying',
+        'Spec Review': 'Planning',
+        'Plan Review': 'Implementing',
+        'PR Review': 'Complete',
       };
-
-      // Persist phase session on task
-      const updatedSessions = [...(task.phaseSessions || []), phaseSession];
-      await store.updateTask(id, task.version, {
-        phaseSessions: updatedSessions,
-        currentPhase: phase,
-      });
-      // Bump local copy for the spawn below
-      task.phaseSessions = updatedSessions;
-      task.currentPhase = phase;
-      task.version += 1;
+      const activeLabel = lastStep ? (NEXT_ACTIVE[lastStep] || null) : 'Specifying';
+      if (activeLabel) {
+        const now = new Date().toISOString();
+        const logEntry = `[${now}] [sdd:${activeLabel}] In progress.`;
+        const updatedResult = task.result ? task.result + '\n' + logEntry : logEntry;
+        await store.updateTask(id, task.version, { result: updatedResult });
+        task.result = updatedResult;
+        task.version += 1;
+      }
     }
 
-    // Extract gh:N issue number from labels
+    // Extract gh:N issue number and risk level from labels
     const ghLabel = labels.find((l: string) => l.startsWith('gh:'));
     const ghIssue = ghLabel ? ghLabel.split(':')[1] : '';
+    const riskLabel = labels.find((l: string) => l.startsWith('risk:'));
+    const risk = riskLabel ? riskLabel.split(':')[1] : 'full';
     const workId = ghIssue || id;
 
+    // TODO: Update agent prompt to emit sddPhase/sddGate in [kanban:update] markers
+    // so structured sddStatus gets populated automatically by agent output.
+    // Marker format: [kanban:update]{"id":"...","sddPhase":"plan","sddGate":"spec-review","sddLink":"...","sddSummary":"..."}[/kanban:update]
     let taskPrompt: string;
     if (isSddTask) {
       taskPrompt = [
@@ -790,14 +875,22 @@ app.post('/api/kanban/tasks/:id/execute', rateLimitGeneral, async (c) => {
         `## Task: ${task.title}`,
         `## Task ID: ${id}`,
         `## GitHub Issue: ${ghIssue ? `#${ghIssue}` : '(none — pipeline will create one)'}`,
-        `## Current Phase: ${phase}`,
-        `## Review Gates: All mandatory (spec, plan, PR)`,
+        `## Risk Level: ${risk}`,
         `## Description: ${taskDescription}`,
         `## Labels: ${labels.join(', ')}`,
         ``,
+        `## How This Works`,
+        ``,
+        `Lobster runs the full SDD pipeline as one continuous process. It pauses at gates`,
+        `(clarify, spec-review, plan-review, pr-review) and produces a resume token.`,
+        `You are one agent in a chain — a previous agent may have run Lobster partway`,
+        `and left a resume token for you. Or you may be the first agent starting fresh.`,
+        `Either way: your job is to run or resume Lobster, handle ONE gate, then exit.`,
+        `The operator approves, and a new agent picks up the next resume token.`,
+        ``,
         `## Instructions`,
         ``,
-        `1. Read the "For Spawned Agents" section in AGENTS.md for architecture rules and artifact locations.`,
+        `1. Read the "For Spawned Agents" section in AGENTS.md for architecture rules.`,
         `2. Check dependencies: if task labels include depends:phase-X, verify those are done on the board.`,
         `   If not done: [kanban:update]{"id":"${id}","status":"blocked","result":"Blocked by Phase X."}[/kanban:update] and STOP.`,
         `3. Create or switch to the worktree:`,
@@ -810,81 +903,85 @@ app.post('/api/kanban/tasks/:id/execute', rateLimitGeneral, async (c) => {
         `     cd "../work-${workId}"`,
         `   fi`,
         `   \`\`\``,
-        `4. **Load context for your phase.** Find the spec dir (look for \`.specify/specs/gh-*\` in the worktree) and read these files:`,
-        ...(phase === 'specify' ? [
-        `   - \`.specify/memory/prd.md\` — the product requirements (source of truth)`,
-        `   - \`.specify/memory/constitution.md\` — non-negotiable rules`,
-        `   - \`completion-log.md\` in the spec dir (if exists — means you are revising, not starting fresh)`,
-        `   - If revising: also read the existing \`spec.md\` to understand what needs to change`,
-        ] : phase === 'plan' ? [
-        `   - \`spec.md\` in the spec dir — **REQUIRED, error if missing**`,
-        `   - \`test-intent.md\` in the spec dir — **REQUIRED, error if missing**`,
-        `   - \`completion-log.md\` in the spec dir`,
-        `   - If revising: also read the existing \`plan.md\` and \`tasks.md\` to understand what needs to change`,
-        ] : [
-        `   - \`spec.md\` in the spec dir — **REQUIRED**`,
-        `   - \`plan.md\` in the spec dir — **REQUIRED, error if missing**`,
-        `   - \`tasks.md\` in the spec dir — **REQUIRED, error if missing**`,
-        `   - \`completion-log.md\` in the spec dir`,
-        `   - Check \`git log\` for Task N/M commit markers to find where implementation left off`,
-        ]),
-        `   If a required file is missing, something went wrong — report it and STOP.`,
+        `   **BRANCH RULE: Always branch from origin/main. NEVER merge other feature branches.**`,
+        `   If the code you need is not on main, the task has an unmet dependency — block the task`,
+        `   and report it. Do not merge feature branches to work around missing dependencies.`,
+        `   The PR diff must show ONLY the work from this task, not other features.`,
+        `4. **Pre-resume: apply operator feedback** (if resuming from a saved token)`,
+        `   If there is Prior Feedback below AND a resume token exists:`,
+        `   - Read the spec dir artifacts and the feedback`,
+        `   - If feedback contains answers to clarification questions or correction requests:`,
+        `     - Edit the relevant files to incorporate the answers (e.g. replace [NEEDS CLARIFICATION] markers with the operator's answers)`,
+        `     - Commit: \`git add -A && git commit -m "fix(gh-${ghIssue || 'N'}): apply operator feedback"\` and push`,
+        `   - Then proceed to resume Lobster`,
+        ``,
         `5. Check if a resume token exists at /tmp/sdd-resume-${id}.token`,
-        `   - If yes: \`lobster resume --token "$(cat /tmp/sdd-resume-${id}.token)" --approve yes\``,
-        `   - If no:`,
+        `   - **If yes — RESUME (this is the normal case after a gate approval):**`,
+        `     First, sync pipeline infrastructure from main:`,
+        `     \`git fetch origin main && git merge origin/main --no-edit -m "chore: sync from main" || true\``,
+        `     Then resume Lobster:`,
+        `     \`lobster resume --token "$(cat /tmp/sdd-resume-${id}.token)" --approve yes\``,
+        `     This tells Lobster the operator approved the last gate. Lobster will continue`,
+        `     to the next step and eventually hit the next gate (or complete).`,
+        `   - **If no token — FRESH RUN (first execution of this task):**`,
         `     \`\`\`bash`,
         `     lobster run --mode tool --file .lobster/sdd-pipeline.lobster \\`,
-        `       --args-json '{"description":"${task.title.replace(/'/g, "\\'")}","issue":"${ghIssue}","workdir":"../work-${workId}","task_id":"${id}"}'`,
+        `       --args-json '{"description":"${task.title.replace(/'/g, "\\'")}", "issue":"${ghIssue}","risk":"${risk}","workdir":"../work-${workId}","task_id":"${id}"}'`,
         `     \`\`\``,
-        `6. When Lobster returns needs_approval:`,
-        `   - Parse sdd_step, branch, link from the output`,
-        `   - Save the resumeToken to /tmp/sdd-resume-${id}.token`,
+        `6. When Lobster returns needs_approval (gate):`,
+        `   - **IMMEDIATELY** save the resumeToken to /tmp/sdd-resume-${id}.token — do this FIRST, before anything else.`,
+        `     This is critical: if you timeout during the quality check, the next agent needs this token.`,
+        `   - Parse the gate name, branch, and link from the output`,
         ``,
         `   **Quality check (BEFORE presenting to operator):**`,
-        `   a. Read the generated artifacts (spec.md, test-intent.md, plan.md, tasks.md — whichever exist for this gate).`,
+        `   a. Read the generated artifacts (spec.md, test-intent.md, plan.md, tasks.md — whichever are new/changed for this gate).`,
         `   b. Compare them against Prior Feedback (below) and the PRD (.specify/memory/prd.md).`,
         `   c. Determine which gate you are at:`,
         ``,
         `   **If at spec-review gate:**`,
-        `   - If the spec contradicts, ignores, or fails to incorporate prior feedback:`,
-        `     - Edit the spec/test-intent files directly to fix the issues.`,
+        `   - **For prior feedback violations** (spec ignores or contradicts explicit operator feedback):`,
+        `     - Edit the spec/test-intent files directly to fix these. The operator already told you what they want.`,
         `     - Run \`git add -A && git commit -m "fix(gh-${ghIssue || 'N'}): incorporate prior feedback"\` and push.`,
-        `     - Keep a detailed record of every change as a diff summary (what Lobster generated vs what you fixed and why).`,
-        `     - You may do this up to 2 times. If still problematic after 2 passes, present with remaining issues noted.`,
+        `     - Keep a detailed record of every change as a diff summary.`,
+        `   - **For scope issues** (spec missing PRD requirements, or spec includes things not in the task description):`,
+        `     - Do NOT edit the spec directly. These are scope decisions for the operator.`,
+        `     - Add \`[NEEDS CLARIFICATION]\` markers to the spec for each scope question.`,
+        `     - Format: \`[NEEDS CLARIFICATION: PRD §X requires Y but the spec does/doesn't include it. Recommendation: <your recommendation and why>]\``,
+        `     - Commit and push with the markers. The clarify gate will present them to the operator.`,
         `   - If no issues found, proceed directly to presenting.`,
         ``,
-        `   **If at plan-review or implementation gate:**`,
+        `   **If at plan-review or any other gate:**`,
         `   - If the generated artifacts have issues (contradict feedback, miss requirements, etc.):`,
         `     - Do NOT edit the files directly.`,
-        `     - Write a corrective prompt describing exactly what needs to change (be specific — quote the problems and the expected fixes).`,
-        `     - Resume Lobster with the corrective prompt: \`lobster resume --token "$(cat /tmp/sdd-resume-${id}.token)" --reject "<your corrective prompt>"\``,
-        `     - This re-triggers the Lobster step with your corrections. Lobster will regenerate the artifacts.`,
-        `     - Re-check the new output. You may retry up to 2 times. If still failing, present to operator with issues noted.`,
+        `     - Write a corrective prompt describing exactly what needs to change.`,
+        `     - Resume Lobster with rejection: \`lobster resume --token "$(cat /tmp/sdd-resume-${id}.token)" --reject "<your corrective prompt>"\``,
+        `     - Re-check the new output. You may retry up to 2 times.`,
         `   - If no issues found, proceed directly to presenting.`,
         ``,
         `   **Present to operator:**`,
-        `   - Update kanban: [kanban:update]{"id":"${id}","status":"needs-input","result":"[sdd:{step}][link:{link}] {summary}"}[/kanban:update]`,
-        `   - Present the gate to the operator. Include:`,
-        `     • A summary of what the artifacts cover`,
-        `     • If you made self-corrections at spec gate: a **Corrections Applied** section with a detailed diff of each change (file, what Lobster wrote, what you changed it to, why)`,
-        `     • If you re-triggered plan/implement: a **Retries** section noting what was wrong and what corrective prompt you sent`,
-        `     • The review/compare link`,
-        `   - DO NOT stop or exit. Stay alive and wait for the operator to respond in this session.`,
-        `   - The operator will review your work and reply here with feedback or approval.`,
-        `   - When the operator replies, read their message and respond. Continue the conversation until they are satisfied.`,
-        `   - Only proceed to the next Lobster step when the operator explicitly approves (e.g. "approved", "lgtm", "continue").`,
-        `7. When Lobster returns ok (complete):`,
-        `   - Update kanban: [kanban:update]{"id":"${id}","status":"review","result":"[sdd:PR Review][link:{pr}] Complete."}[/kanban:update]`,
+        `   - Update kanban: [kanban:update]{"id":"${id}","status":"needs-input","result":"[sdd:{gate}][link:{link}] {summary}"}[/kanban:update]`,
+        `   - Include: summary of artifacts, corrections/retries if any, review link.`,
+        `   - Then EXIT. Do not stay alive. The operator will approve via the UI,`,
+        `     which triggers a new agent with the saved resume token.`,
+        ``,
+        `7. When Lobster returns ok (pipeline complete):`,
+        `   - Update kanban: [kanban:update]{"id":"${id}","status":"review","result":"[sdd:PR Review][link:{pr}] Pipeline complete."}[/kanban:update]`,
         `   - Clean up: rm /tmp/sdd-resume-${id}.token`,
-        `   - Stay alive for final review conversation. Only stop when the operator approves.`,
+        `   - EXIT.`,
         ``,
         `## CRITICAL`,
-        `- At spec gates: you may edit artifacts directly to incorporate prior feedback, but do NOT generate specs from scratch`,
-        `- At plan/implement gates: do NOT edit artifacts directly — use \`lobster resume --reject\` to re-trigger the step with a corrective prompt`,
+        `- ALWAYS run Lobster (resume or fresh). Never skip it. Never freelance SDD steps.`,
+        `- At spec gates: you may edit artifacts directly to incorporate prior feedback`,
+        `- At plan/implement gates: use \`lobster resume --reject\` to re-trigger, do NOT edit directly`,
         `- Do NOT decide step order — Lobster enforces it`,
-        `- Do NOT skip gates`,
-        `- Do NOT stop or exit at gates — stay alive and wait for operator input in this session`,
+        `- Do NOT present artifacts from a previous gate — only present what THIS Lobster run produced`,
         `- PRD is the source of truth — do not invent states, fields, or behaviors beyond the PRD`,
+        ``,
+        `## PROGRESS LOG`,
+        `Write progress updates to /tmp/sdd-progress-${id}.log throughout your run.`,
+        `Append one line per action: \`echo "$(date -u +%H:%M:%S) <what you are doing>" >> /tmp/sdd-progress-${id}.log\``,
+        `Update BEFORE each major step: starting Lobster, reading spec, quality check, editing files, presenting.`,
+        `This lets the operator monitor progress without waiting for you to finish.`,
       ].join('\n');
     } else {
       taskPrompt = `You are working on a Kanban task.\n\nTitle: ${task.title}\n\nDescription: ${taskDescription}\n\nDeliver your result as a clear summary of what was done.`;
@@ -901,11 +998,12 @@ app.post('/api/kanban/tasks/:id/execute', rateLimitGeneral, async (c) => {
       taskPrompt += `\n\n## Prior Feedback\n${feedbackBlock}`;
     }
 
-    const sessionLabel = phase ? `task:${id}:phase:${phase}` : `kb-${id}`;
+    const sessionLabel = `kb-${id}`;
     const spawnArgs: Record<string, unknown> = {
       task: taskPrompt,
       mode: 'run',
       label: sessionLabel,
+      runTimeoutSeconds: 7200,
     };
     // Use task's model, or board default. If neither is set, omit — OpenClaw
     // will use whatever default model the operator configured in openclaw.json.
@@ -954,48 +1052,60 @@ app.post('/api/kanban/tasks/:id/approve', rateLimitGeneral, async (c) => {
   }
 
   try {
+    // Store original status before approve mutates it
+    const preApproveTask = await store.getTask(id);
+    const wasNeedsInput = preApproveTask.status === 'needs-input';
+
     const task = await store.approveTask(id, parsed.data.note, 'operator');
 
-    // Mark current phase session as completed and advance phase
+    // Update structured sddStatus if present
+    if (preApproveTask.sddStatus?.gate) {
+      await store.approveSddGate(id, `${preApproveTask.sddStatus.gate} approved by operator`);
+      const refreshed = await store.getTask(id);
+      task.sddStatus = refreshed.sddStatus;
+      task.version = refreshed.version;
+    }
+
+    // Append approval to result log (legacy), preserving the gate name from the last [sdd:*] entry
     const now = Date.now();
     const ts = new Date(now).toISOString();
-    let completedPhase: SddPhase | undefined;
-    let nextPhase: SddPhase | undefined;
+    // Parse last SDD step from result to use in the approval entry
+    const sddTagRe = /\[sdd:([^\]]+)\]/g;
+    const resultText = preApproveTask.result || '';
+    const sddMatches = [...resultText.matchAll(sddTagRe)];
+    const lastSddStep = sddMatches.length > 0 ? sddMatches[sddMatches.length - 1][1] : 'Gate';
+    const logEntry = `\n[${ts}] [sdd:${lastSddStep}] Approved by operator.`;
+    const updatedResult = (task.result || '') + logEntry;
+    await store.updateTask(id, task.version, { result: updatedResult });
+    task.result = updatedResult;
+    task.version += 1;
 
-    if (task.phaseSessions?.length) {
-      const sessions = [...task.phaseSessions];
-      const activeIdx = sessions.findIndex(s => s.status === 'active');
-      if (activeIdx !== -1) {
-        completedPhase = sessions[activeIdx].phase;
-        sessions[activeIdx] = { ...sessions[activeIdx], status: 'completed', endedAt: now };
-      } else {
-        completedPhase = task.currentPhase ?? undefined;
+    // Option A: if approved from needs-input (gate approval), auto-trigger execute
+    // The next agent will find the resume token and continue the Lobster pipeline
+    if (wasNeedsInput) {
+      const labels = (task.labels || []) as string[];
+      const isSddTask = labels.some((l: string) => /^phase-|^product|^infra/.test(l));
+      if (isSddTask) {
+        // Fire-and-forget: re-execute to resume Lobster from the saved token
+        // Small delay so the approve response returns first
+        setTimeout(async () => {
+          try {
+            // task is now in 'todo' after approve — execute will move to in-progress
+            const freshTask = await store.getTask(id);
+            if (freshTask.status === 'todo') {
+              // Trigger the execute route logic internally
+              const executeUrl = `http://127.0.0.1:${c.req.header('host')?.split(':')[1] || '3080'}/api/kanban/tasks/${id}/execute`;
+              await fetch(executeUrl, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({}),
+              });
+            }
+          } catch (err) {
+            console.warn(`[kanban] Auto-execute after approve failed for ${id}:`, err);
+          }
+        }, 500);
       }
-
-      // Determine next phase
-      // SDD_PHASES imported from shared lib/sdd.ts
-      if (completedPhase) {
-        const idx = SDD_PHASES.indexOf(completedPhase);
-        nextPhase = idx < SDD_PHASES.length - 1 ? SDD_PHASES[idx + 1] : undefined;
-      }
-
-      // Append approval to the result log so the card badge updates
-      const stepName = completedPhase ? PHASE_GATE_STEP[completedPhase] || completedPhase : 'Review';
-      const nextStepName = nextPhase
-        ? PHASE_ACTIVE_LABEL[nextPhase] || nextPhase
-        : 'Complete';
-      const logEntry = `\n[${ts}] [sdd:${stepName}] Approved. Proceeding to ${nextStepName}.`;
-      const updatedResult = (task.result || '') + logEntry;
-
-      await store.updateTask(id, task.version, {
-        phaseSessions: sessions,
-        currentPhase: nextPhase ?? task.currentPhase,
-        result: updatedResult,
-      });
-      task.phaseSessions = sessions;
-      task.result = updatedResult;
-      if (nextPhase) task.currentPhase = nextPhase;
-      task.version += 1;
     }
 
     return c.json(task);
@@ -1026,6 +1136,14 @@ app.post('/api/kanban/tasks/:id/reject', rateLimitGeneral, async (c) => {
 
   try {
     const task = await store.rejectTask(id, parsed.data.note, 'operator');
+
+    // Update structured sddStatus if present
+    if (task.sddStatus) {
+      await store.rejectSddGate(id, parsed.data.note);
+      const refreshed = await store.getTask(id);
+      task.sddStatus = refreshed.sddStatus;
+      task.version = refreshed.version;
+    }
 
     // Mark current phase session as error and set reset target
     const RESET_PHASE_MAP: Record<string, SddPhase> = {
@@ -1160,6 +1278,33 @@ app.post('/api/kanban/tasks/:id/complete', rateLimitGeneral, async (c) => {
     return c.json(task);
   } catch (err) {
     return handleWorkflowError(c, err);
+  }
+});
+
+// GET /api/kanban/tasks/:id/progress
+// Returns the last line of the agent progress log and when it was written
+app.get('/api/kanban/tasks/:id/progress', rateLimitGeneral, async (c) => {
+  const id = c.req.param('id');
+  const logPath = `/tmp/sdd-progress-${id}.log`;
+
+  try {
+    const { readFileSync, statSync } = await import('node:fs');
+    const stat = statSync(logPath);
+    const content = readFileSync(logPath, 'utf-8').trim();
+    const lines = content.split('\n');
+    const lastLine = lines[lines.length - 1] || '';
+    const modifiedAt = stat.mtimeMs;
+    const ageMs = Date.now() - modifiedAt;
+
+    return c.json({
+      lastLine,
+      modifiedAt,
+      ageMs,
+      ageMinutes: Math.round(ageMs / 60000),
+      totalLines: lines.length,
+    });
+  } catch {
+    return c.json({ lastLine: null, ageMs: null, ageMinutes: null, totalLines: 0 });
   }
 });
 

@@ -28,8 +28,10 @@ export const PHASE_ACTIVE_LABEL: Record<SddPhase, string> = {
 /** All valid step names that can appear in [sdd:*] tags */
 export const VALID_SDD_STEPS = [
   'Start',
+  'Specifying',
   'Clarify',
   'Spec Review',
+  'Planning',
   'Plan Review',
   'Implementing',
   'PR Review',
@@ -40,8 +42,9 @@ export const VALID_SDD_STEPS = [
 
 /** The ordered SDD steps for progress display */
 export const SDD_PROGRESS_STEPS = [
-  { key: 'Clarify', label: 'Clarify' },
+  { key: 'Specifying', label: 'Specifying' },
   { key: 'Spec Review', label: 'Spec Review' },
+  { key: 'Planning', label: 'Planning' },
   { key: 'Plan Review', label: 'Plan Review' },
   { key: 'Implementing', label: 'Implementing' },
   { key: 'PR Review', label: 'PR Review' },
@@ -122,13 +125,33 @@ export function parseResultLog(result: string | undefined | null): ParsedResultL
   let isLastApproved = false;
   let isLastRejected = false;
 
+  // Normalize common step name variants to canonical form
+  const STEP_NORMALIZE: Record<string, string> = {
+    'spec-review': 'Spec Review',
+    'plan-review': 'Plan Review',
+    'pr-review': 'PR Review',
+    'specifying': 'Specifying',
+    'planning': 'Planning',
+    'implementing': 'Implementing',
+    'complete': 'Complete',
+    'reset': 'Reset',
+    'clarify': 'Clarify',
+    'start': 'Start',
+  };
+
   for (let i = entries.length - 1; i >= 0; i--) {
     if (entries[i].sddStep) {
-      lastStep = entries[i].sddStep;
-      lastLink = entries[i].link;
-      isLastApproved = entries[i].isApproved;
-      isLastRejected = entries[i].isRejected;
-      break;
+      if (!lastStep) {
+        const raw = entries[i].sddStep!;
+        lastStep = STEP_NORMALIZE[raw.toLowerCase()] || raw;
+        isLastApproved = entries[i].isApproved;
+        isLastRejected = entries[i].isRejected;
+      }
+      // Always use the most recent link from ANY entry (not just the last step)
+      if (!lastLink && entries[i].link) {
+        lastLink = entries[i].link;
+      }
+      if (lastStep && lastLink) break;
     }
   }
 
@@ -139,11 +162,91 @@ export function parseResultLog(result: string | undefined | null): ParsedResultL
 
 export type SddBadgeTone = 'waiting' | 'approved' | 'rejected' | 'active';
 
+/** Structured SDD status types (mirrored from kanban-store for client use) */
+export type SddStatusPhase = 'specify' | 'plan' | 'implement' | 'review' | 'done';
+
+export interface SddEvent {
+  at: number;
+  phase: string;
+  gate?: string;
+  action: 'started' | 'gate-reached' | 'approved' | 'rejected' | 'error' | 'retry' | 'completed';
+  summary: string;
+  link?: string;
+}
+
+export interface SddStatus {
+  phase: SddStatusPhase;
+  gate: string | null;
+  gateStatus: 'pending' | 'approved' | 'rejected' | null;
+  attempt: number;
+  link: string | null;
+  updatedAt: number;
+  history: SddEvent[];
+}
+
+/** Phase label for active work display */
+const PHASE_DISPLAY_LABEL: Record<string, string> = {
+  specify: 'Specifying',
+  plan: 'Planning',
+  implement: 'Implementing',
+  review: 'Review',
+  done: 'Complete',
+};
+
+/** Gate label for display */
+const GATE_DISPLAY_LABEL: Record<string, string> = {
+  'clarify': 'Clarify',
+  'spec-review': 'Spec Review',
+  'plan-review': 'Plan Review',
+  'code-review': 'Code Review',
+  'code-review-escalation': 'Code Review Escalation',
+  'pr-review': 'PR Review',
+};
+
 /**
- * Determine what the card badge should show, using authoritative fields
- * with the result log as a fallback.
+ * Determine what the card badge should show.
+ * Primary: reads task.sddStatus (structured).
+ * Fallback: parses task.result text (backward compat for old tasks).
  */
 export function getSddBadgeInfo(task: {
+  sddStatus?: SddStatus | null;
+  currentPhase?: SddPhase | string | null;
+  result?: string | null;
+  status?: string;
+}): { label: string; tone: SddBadgeTone; link: string | null } | null {
+  // Primary: structured sddStatus
+  if (task.sddStatus) {
+    const sdd = task.sddStatus;
+
+    // At a gate
+    if (sdd.gate && sdd.gateStatus) {
+      const gateLabel = GATE_DISPLAY_LABEL[sdd.gate] || sdd.gate;
+      if (sdd.gateStatus === 'approved') {
+        // Show next phase as active
+        const phaseLabel = PHASE_DISPLAY_LABEL[sdd.phase] || sdd.phase;
+        return { label: phaseLabel, tone: 'active', link: null };
+      }
+      if (sdd.gateStatus === 'rejected') {
+        return { label: gateLabel, tone: 'rejected', link: sdd.link };
+      }
+      // pending
+      return { label: gateLabel, tone: 'waiting', link: sdd.link };
+    }
+
+    // Active phase, no gate
+    if (sdd.phase === 'done') {
+      return { label: 'Complete', tone: 'approved', link: sdd.link };
+    }
+    const phaseLabel = PHASE_DISPLAY_LABEL[sdd.phase] || sdd.phase;
+    return { label: phaseLabel, tone: 'active', link: null };
+  }
+
+  // Fallback: parse result text (backward compat)
+  return getSddBadgeInfoFromResult(task);
+}
+
+/** Original badge logic from result text parsing — kept for backward compat */
+function getSddBadgeInfoFromResult(task: {
   currentPhase?: SddPhase | string | null;
   result?: string | null;
   status?: string;

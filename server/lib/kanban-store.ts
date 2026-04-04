@@ -67,6 +67,29 @@ export interface PhaseSession {
   status: 'active' | 'paused' | 'completed' | 'error';
 }
 
+// ── Structured SDD Status ────────────────────────────────────────────
+
+export type SddStatusPhase = 'specify' | 'plan' | 'implement' | 'review' | 'done';
+
+export interface SddEvent {
+  at: number;
+  phase: string;
+  gate?: string;
+  action: 'started' | 'gate-reached' | 'approved' | 'rejected' | 'error' | 'retry' | 'completed';
+  summary: string;
+  link?: string;
+}
+
+export interface SddStatus {
+  phase: SddStatusPhase;
+  gate: string | null;
+  gateStatus: 'pending' | 'approved' | 'rejected' | null;
+  attempt: number;
+  link: string | null;
+  updatedAt: number;
+  history: SddEvent[];
+}
+
 export interface KanbanTask {
   id: string;
   title: string;
@@ -92,6 +115,7 @@ export interface KanbanTask {
   feedback: TaskFeedback[];
   phaseSessions?: PhaseSession[];
   currentPhase?: SddPhase;
+  sddStatus?: SddStatus;
 }
 
 export interface KanbanBoardConfig {
@@ -535,6 +559,7 @@ export class KanbanStore {
         | 'feedback'
         | 'phaseSessions'
         | 'currentPhase'
+        | 'sddStatus'
       >
     >,
     actor?: string,
@@ -908,18 +933,26 @@ export class KanbanStore {
           .reduce((max, t) => Math.max(max, t.columnOrder), -1);
         task.columnOrder = maxOrder + 1;
       } else {
-        // Success path: mark run as done, move to review
+        // Success path: mark run as done
         task.run.status = 'done';
-        task.status = 'review';
+        // Only move to 'review' if the task is still in-progress.
+        // If a kanban marker already moved it (e.g. to needs-input), preserve that.
+        if (task.status === 'in-progress') {
+          task.status = 'review';
+          const maxOrder = data.tasks
+            .filter((t) => t.status === 'review' && t.id !== taskId)
+            .reduce((max, t) => Math.max(max, t.columnOrder), -1);
+          task.columnOrder = maxOrder + 1;
+        }
         if (result) {
-          task.result = result;
+          // Append to existing result log instead of overwriting
+          if (task.result) {
+            task.result = task.result + '\n' + result;
+          } else {
+            task.result = result;
+          }
           task.resultAt = now;
         }
-
-        const maxOrder = data.tasks
-          .filter((t) => t.status === 'review' && t.id !== taskId)
-          .reduce((max, t) => Math.max(max, t.columnOrder), -1);
-        task.columnOrder = maxOrder + 1;
       }
 
       task.updatedAt = now;
@@ -1154,7 +1187,7 @@ export class KanbanStore {
     // The proposal workflow (confirm/auto) serves as the gating mechanism instead.
 
     // Build patch from payload — allowlist safe fields only
-    const ALLOWED_UPDATE_FIELDS = ['title', 'description', 'status', 'priority', 'assignee', 'labels', 'result'] as const;
+    const ALLOWED_UPDATE_FIELDS = ['title', 'description', 'status', 'priority', 'assignee', 'labels', 'result', 'sddStatus'] as const;
     const patch: Record<string, unknown> = {};
     for (const key of ALLOWED_UPDATE_FIELDS) {
       if (key in payload) patch[key] = payload[key];
@@ -1171,6 +1204,215 @@ export class KanbanStore {
     const updated: KanbanTask = { ...task, ...patch, updatedAt: now, version: task.version + 1 } as KanbanTask;
     data.tasks[idx] = updated;
     return updated;
+  }
+
+  // ── SDD Status helpers ─────────────────────────────────────────────────
+
+  /** Initialize or get sddStatus, creating a default if missing. */
+  private _ensureSddStatus(task: KanbanTask): SddStatus {
+    if (!task.sddStatus) {
+      task.sddStatus = {
+        phase: 'specify',
+        gate: null,
+        gateStatus: null,
+        attempt: 0,
+        link: null,
+        updatedAt: Date.now(),
+        history: [],
+      };
+    }
+    return task.sddStatus;
+  }
+
+  async setSddPhase(taskId: string, phase: SddStatusPhase, summary?: string): Promise<KanbanTask> {
+    return this.withLock(async () => {
+      const data = await this.readRaw();
+      const idx = data.tasks.findIndex((t) => t.id === taskId);
+      if (idx === -1) throw new TaskNotFoundError(taskId);
+
+      const task = data.tasks[idx];
+      const sdd = this._ensureSddStatus(task);
+      const now = Date.now();
+
+      sdd.phase = phase;
+      sdd.gate = null;
+      sdd.gateStatus = null;
+      sdd.updatedAt = now;
+      sdd.history.push({
+        at: now,
+        phase,
+        action: 'started',
+        summary: summary || `${phase} phase started`,
+      });
+
+      task.updatedAt = now;
+      task.version += 1;
+      data.tasks[idx] = task;
+      await this.writeRaw(data);
+      return task;
+    });
+  }
+
+  async setSddGate(taskId: string, gate: string, link?: string, summary?: string): Promise<KanbanTask> {
+    return this.withLock(async () => {
+      const data = await this.readRaw();
+      const idx = data.tasks.findIndex((t) => t.id === taskId);
+      if (idx === -1) throw new TaskNotFoundError(taskId);
+
+      const task = data.tasks[idx];
+      const sdd = this._ensureSddStatus(task);
+      const now = Date.now();
+
+      sdd.gate = gate;
+      sdd.gateStatus = 'pending';
+      if (link) sdd.link = link;
+      sdd.updatedAt = now;
+      sdd.history.push({
+        at: now,
+        phase: sdd.phase,
+        gate,
+        action: 'gate-reached',
+        summary: summary || `Reached ${gate} gate`,
+        link,
+      });
+
+      task.updatedAt = now;
+      task.version += 1;
+      data.tasks[idx] = task;
+      await this.writeRaw(data);
+      return task;
+    });
+  }
+
+  async approveSddGate(taskId: string, summary?: string): Promise<KanbanTask> {
+    return this.withLock(async () => {
+      const data = await this.readRaw();
+      const idx = data.tasks.findIndex((t) => t.id === taskId);
+      if (idx === -1) throw new TaskNotFoundError(taskId);
+
+      const task = data.tasks[idx];
+      const sdd = this._ensureSddStatus(task);
+      const now = Date.now();
+
+      const gate = sdd.gate;
+      sdd.gateStatus = 'approved';
+      sdd.updatedAt = now;
+      sdd.history.push({
+        at: now,
+        phase: sdd.phase,
+        gate: gate || undefined,
+        action: 'approved',
+        summary: summary || `${gate || 'Gate'} approved`,
+      });
+
+      // Advance phase after approval
+      const GATE_PHASE_ADVANCE: Record<string, SddStatusPhase> = {
+        'clarify': 'specify',
+        'spec-review': 'plan',
+        'plan-review': 'implement',
+        'code-review': 'implement',
+        'code-review-escalation': 'implement',
+        'pr-review': 'done',
+      };
+      if (gate && GATE_PHASE_ADVANCE[gate]) {
+        sdd.phase = GATE_PHASE_ADVANCE[gate];
+        sdd.gate = null;
+        sdd.gateStatus = null;
+      }
+
+      task.updatedAt = now;
+      task.version += 1;
+      data.tasks[idx] = task;
+      await this.writeRaw(data);
+      return task;
+    });
+  }
+
+  async rejectSddGate(taskId: string, reason?: string): Promise<KanbanTask> {
+    return this.withLock(async () => {
+      const data = await this.readRaw();
+      const idx = data.tasks.findIndex((t) => t.id === taskId);
+      if (idx === -1) throw new TaskNotFoundError(taskId);
+
+      const task = data.tasks[idx];
+      const sdd = this._ensureSddStatus(task);
+      const now = Date.now();
+
+      const gate = sdd.gate;
+      sdd.gateStatus = 'rejected';
+      sdd.updatedAt = now;
+      sdd.history.push({
+        at: now,
+        phase: sdd.phase,
+        gate: gate || undefined,
+        action: 'rejected',
+        summary: reason || `${gate || 'Gate'} rejected`,
+      });
+
+      task.updatedAt = now;
+      task.version += 1;
+      data.tasks[idx] = task;
+      await this.writeRaw(data);
+      return task;
+    });
+  }
+
+  async incrementSddAttempt(taskId: string, errorSummary?: string): Promise<KanbanTask> {
+    return this.withLock(async () => {
+      const data = await this.readRaw();
+      const idx = data.tasks.findIndex((t) => t.id === taskId);
+      if (idx === -1) throw new TaskNotFoundError(taskId);
+
+      const task = data.tasks[idx];
+      const sdd = this._ensureSddStatus(task);
+      const now = Date.now();
+
+      sdd.attempt += 1;
+      sdd.updatedAt = now;
+      sdd.history.push({
+        at: now,
+        phase: sdd.phase,
+        action: 'retry',
+        summary: errorSummary || `Retry attempt ${sdd.attempt}`,
+      });
+
+      task.updatedAt = now;
+      task.version += 1;
+      data.tasks[idx] = task;
+      await this.writeRaw(data);
+      return task;
+    });
+  }
+
+  async completeSdd(taskId: string, link?: string, summary?: string): Promise<KanbanTask> {
+    return this.withLock(async () => {
+      const data = await this.readRaw();
+      const idx = data.tasks.findIndex((t) => t.id === taskId);
+      if (idx === -1) throw new TaskNotFoundError(taskId);
+
+      const task = data.tasks[idx];
+      const sdd = this._ensureSddStatus(task);
+      const now = Date.now();
+
+      sdd.phase = 'done';
+      sdd.gate = null;
+      sdd.gateStatus = null;
+      if (link) sdd.link = link;
+      sdd.updatedAt = now;
+      sdd.history.push({
+        at: now,
+        phase: 'done',
+        action: 'completed',
+        summary: summary || 'Pipeline complete',
+        link,
+      });
+
+      task.updatedAt = now;
+      task.version += 1;
+      data.tasks[idx] = task;
+      await this.writeRaw(data);
+      return task;
+    });
   }
 
   /** Reset store to empty (for testing). */
