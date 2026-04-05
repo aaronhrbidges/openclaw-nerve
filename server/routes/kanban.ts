@@ -835,6 +835,7 @@ app.post('/api/kanban/tasks/:id/execute', rateLimitGeneral, async (c) => {
       }
 
       // Also keep the legacy result log for backward compat
+      // AND set structured sddStatus based on where we're resuming from
       const sddTagRe = /\[sdd:([^\]]+)\]/g;
       const sddMatches = task.result ? [...task.result.matchAll(sddTagRe)] : [];
       const lastStep = sddMatches.length > 0 ? sddMatches[sddMatches.length - 1][1] : null;
@@ -846,6 +847,13 @@ app.post('/api/kanban/tasks/:id/execute', rateLimitGeneral, async (c) => {
         'Plan Review': 'Implementing',
         'PR Review': 'Complete',
       };
+      // Map the display label to the structured phase
+      const LABEL_TO_PHASE: Record<string, string> = {
+        'Specifying': 'specify',
+        'Planning': 'plan',
+        'Implementing': 'implement',
+        'Complete': 'done',
+      };
       const activeLabel = lastStep ? (NEXT_ACTIVE[lastStep] || null) : 'Specifying';
       if (activeLabel) {
         const now = new Date().toISOString();
@@ -854,6 +862,12 @@ app.post('/api/kanban/tasks/:id/execute', rateLimitGeneral, async (c) => {
         await store.updateTask(id, task.version, { result: updatedResult });
         task.result = updatedResult;
         task.version += 1;
+
+        // Set structured sddStatus to match
+        const structuredPhase = LABEL_TO_PHASE[activeLabel];
+        if (structuredPhase) {
+          await store.setSddPhase(id, structuredPhase as any, `Resuming: ${activeLabel}`).catch(() => {});
+        }
       }
     }
 
@@ -864,9 +878,6 @@ app.post('/api/kanban/tasks/:id/execute', rateLimitGeneral, async (c) => {
     const risk = riskLabel ? riskLabel.split(':')[1] : 'full';
     const workId = ghIssue || id;
 
-    // TODO: Update agent prompt to emit sddPhase/sddGate in [kanban:update] markers
-    // so structured sddStatus gets populated automatically by agent output.
-    // Marker format: [kanban:update]{"id":"...","sddPhase":"plan","sddGate":"spec-review","sddLink":"...","sddSummary":"..."}[/kanban:update]
     let taskPrompt: string;
     if (isSddTask) {
       taskPrompt = [
@@ -976,15 +987,31 @@ app.post('/api/kanban/tasks/:id/execute', rateLimitGeneral, async (c) => {
         `   - Same as plan-review: review, fix what makes sense, approve and continue.`,
         ``,
         `   **Only present to operator at spec-review and clarify gates:**`,
-        `   - Update kanban: [kanban:update]{"id":"${id}","status":"needs-input","result":"[sdd:{gate}][link:{link}] {summary}"}[/kanban:update]`,
+        `   - Update kanban with structured SDD status:`,
+        `     For clarify: [kanban:update]{"id":"${id}","status":"needs-input","result":"[sdd:Clarify][link:{link}] {summary}","sddGate":"clarify","sddLink":"{link}","sddSummary":"{summary}"}[/kanban:update]`,
+        `     For spec-review: [kanban:update]{"id":"${id}","status":"needs-input","result":"[sdd:Spec Review][link:{link}] {summary}","sddGate":"spec-review","sddLink":"{link}","sddSummary":"{summary}"}[/kanban:update]`,
         `   - Include: summary of artifacts, corrections/retries if any, review link.`,
         `   - Then EXIT. Do not stay alive. The operator will approve via the UI,`,
         `     which triggers a new agent with the saved resume token.`,
         ``,
         `7. When Lobster returns ok (pipeline complete):`,
-        `   - Update kanban: [kanban:update]{"id":"${id}","status":"review","result":"[sdd:PR Review][link:{pr}] Pipeline complete."}[/kanban:update]`,
+        `   - Update kanban: [kanban:update]{"id":"${id}","status":"review","result":"[sdd:PR Review][link:{pr}] Pipeline complete.","sddPhase":"review","sddLink":"{pr}","sddSummary":"PR ready for review"}[/kanban:update]`,
         `   - Clean up: rm /tmp/sdd-resume-${id}.token`,
         `   - EXIT.`,
+        ``,
+        `## KANBAN MARKER FORMAT`,
+        ``,
+        `Always include structured SDD fields in [kanban:update] markers so the board shows correct status:`,
+        ``,
+        `| When | Fields to include |`,
+        `|------|------------------|`,
+        `| Starting plan generation | \`"sddPhase":"plan"\` |`,
+        `| Starting implementation | \`"sddPhase":"implement"\` |`,
+        `| At a gate (clarify/spec-review) | \`"sddGate":"{gate-name}", "sddLink":"{url}", "sddSummary":"{text}"\` |`,
+        `| Pipeline complete (PR) | \`"sddPhase":"review", "sddLink":"{pr-url}"\` |`,
+        `| Done (merged) | \`"sddPhase":"done"\` |`,
+        ``,
+        `Example: [kanban:update]{"id":"${id}","status":"in-progress","result":"...","sddPhase":"implement"}[/kanban:update]`,
         ``,
         `## CRITICAL`,
         `- ALWAYS run Lobster (resume or fresh). Never skip it. Never freelance SDD steps.`,
