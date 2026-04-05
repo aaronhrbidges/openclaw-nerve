@@ -1188,6 +1188,28 @@ app.post('/api/kanban/tasks/:id/reject', rateLimitGeneral, async (c) => {
       }
     }
 
+    // Auto-execute after reject — the next agent picks up the rejection feedback
+    // and revises the spec/plan. Same pattern as approve auto-execute.
+    const rejectLabels = (task.labels || []) as string[];
+    const isRejectSddTask = rejectLabels.some((l: string) => /^phase-|^product|^infra/.test(l));
+    if (isRejectSddTask && task.status === 'todo') {
+      setTimeout(async () => {
+        try {
+          const freshTask = await store.getTask(id);
+          if (freshTask.status === 'todo') {
+            const executeUrl = `http://127.0.0.1:${c.req.header('host')?.split(':')[1] || '3080'}/api/kanban/tasks/${id}/execute`;
+            await fetch(executeUrl, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({}),
+            });
+          }
+        } catch (err) {
+          console.warn(`[kanban] Auto-execute after reject failed for ${id}:`, err);
+        }
+      }, 500);
+    }
+
     return c.json(task);
   } catch (err) {
     return handleWorkflowError(c, err);
