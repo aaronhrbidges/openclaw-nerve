@@ -190,6 +190,34 @@ function pollSessionCompletion(
               if (p.sddGate) {
                 await store.setSddGate(taskId, p.sddGate as string, p.sddLink as string || undefined, p.sddSummary as string || undefined);
               }
+
+              // Bridge: parse [sdd:X] tags from result text into sddStatus
+              // Agents emit text-based markers but not structured sddPhase/sddGate fields.
+              // This maps known [sdd:X] tags to the structured status.
+              if (p.result && typeof p.result === 'string') {
+                const sddTagMatch = (p.result as string).match(/\[sdd:([^\]]+)\]/);
+                if (sddTagMatch) {
+                  const tag = sddTagMatch[1].toLowerCase();
+                  const linkMatch = (p.result as string).match(/\[link:([^\]]+)\]/);
+                  const link = linkMatch ? linkMatch[1] : undefined;
+                  // Map text tags to structured phases/gates
+                  if (tag === 'clarify' || tag.includes('clarif')) {
+                    await store.setSddGate(taskId, 'clarify', link, p.result as string).catch(() => {});
+                  } else if (tag === 'spec review' || tag === 'spec-review') {
+                    await store.setSddGate(taskId, 'spec-review', link, p.result as string).catch(() => {});
+                  } else if (tag === 'plan review' || tag === 'plan-review' || tag.includes('plan review')) {
+                    await store.setSddPhase(taskId, 'plan' as any, p.result as string).catch(() => {});
+                  } else if (tag === 'planning' || tag === 'plan') {
+                    await store.setSddPhase(taskId, 'plan' as any, p.result as string).catch(() => {});
+                  } else if (tag === 'implementing' || tag === 'implement') {
+                    await store.setSddPhase(taskId, 'implement' as any, p.result as string).catch(() => {});
+                  } else if (tag === 'pr review' || tag === 'pr-review') {
+                    await store.setSddPhase(taskId, 'review' as any, p.result as string).catch(() => {});
+                  } else if (tag === 'complete' || tag === 'done') {
+                    await store.setSddPhase(taskId, 'done' as any, p.result as string).catch(() => {});
+                  }
+                }
+              }
             } else {
               // Different task or create — use proposal system
               await store.createProposal({
