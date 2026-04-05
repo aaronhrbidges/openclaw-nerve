@@ -992,6 +992,7 @@ app.post('/api/kanban/tasks/:id/execute', rateLimitGeneral, async (c) => {
         `- At plan-review gates: review cross-model findings yourself, fix valid ones, then approve and continue — do NOT stop for operator`,
         `- At implementation/PR gates: approve and continue autonomously`,
         `- You may edit plan.md and tasks.md directly to fix review findings`,
+        `- TESTS MUST ACTUALLY RUN: Do NOT claim tests pass without running them. The verify step runs unit, acceptance (Testcontainers), and E2E tests. If acceptance tests exist but vitest.acceptance.config.ts is missing, CREATE IT. If tests fail, fix them. "Tests written" ≠ "tests pass".`,
         `- Do NOT decide step order — Lobster enforces it`,
         `- Do NOT present artifacts from a previous gate — only present what THIS Lobster run produced`,
         `- PRD is the source of truth — do not invent states, fields, or behaviors beyond the PRD`,
