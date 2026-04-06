@@ -1046,6 +1046,24 @@ app.post('/api/kanban/tasks/:id/execute', rateLimitGeneral, async (c) => {
     }
 
     const sessionLabel = `kb-${id}`;
+
+    // Kill any existing subagent session for this task to prevent accumulation.
+    // Each re-trigger should replace the old session, not stack on top of it.
+    try {
+      const existing = await invokeGatewayTool('subagents', { action: 'list', recentMinutes: 240 }, 10_000) as Array<{ label?: string; sessionId?: string; status?: string }>;
+      if (Array.isArray(existing)) {
+        const stale = existing.filter(s => s.label === sessionLabel);
+        for (const s of stale) {
+          if (s.sessionId) {
+            console.log(`[kanban] Killing stale session ${s.sessionId} for task ${id}`);
+            await invokeGatewayTool('subagents', { action: 'kill', target: s.sessionId }, 10_000).catch(() => {});
+          }
+        }
+      }
+    } catch (err) {
+      console.warn(`[kanban] Failed to clean stale sessions for ${id}:`, err);
+    }
+
     const spawnArgs: Record<string, unknown> = {
       task: taskPrompt,
       mode: 'run',
