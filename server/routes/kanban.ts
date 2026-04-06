@@ -1061,7 +1061,7 @@ app.post('/api/kanban/tasks/:id/execute', rateLimitGeneral, async (c) => {
     if (thinking) spawnArgs.thinking = thinking;
 
     const runLabel = sessionLabel;
-    invokeGatewayTool('sessions_spawn', spawnArgs)
+    invokeGatewayTool('sessions_spawn', spawnArgs, 120_000)
       .then(() => {
         // Poll for session completion in the background
         pollSessionCompletion(store, id, runLabel);
