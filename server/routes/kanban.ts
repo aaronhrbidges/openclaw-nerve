@@ -83,9 +83,9 @@ export async function rehydrateKanbanPollers(): Promise<void> {
       return t.status === 'in-progress' && t.run?.status === 'running' && t.run?.sessionKey;
     });
     for (const task of running) {
-      // The poller matches by spawn label, which is kb-{id} (no timestamp).
-      // run.sessionKey has a timestamp suffix, so strip it for the label.
-      const label = `kb-${task.id}`;
+      // The spawn label now includes a timestamp suffix matching run.sessionKey.
+      // Use run.sessionKey directly so the poller matches the correct session.
+      const label = task.run?.sessionKey ?? `kb-${task.id}`;
       console.log(`[kanban] Rehydrating poller for task ${task.id} (label: ${label})`);
       pollSessionCompletion(store, task.id, label);
     }
@@ -229,6 +229,51 @@ function pollSessionCompletion(
       }
 
       if (status === 'running') {
+        // For persistent mode: check for mid-run kanban markers
+        // so sddPhase/sddGate updates apply immediately
+        try {
+          const histRaw = await invokeGatewayTool('sessions_history', {
+            sessionKey: match.sessionKey,
+            limit: 3,
+          });
+          const histParsed = parseGatewayResponse(histRaw);
+          const messages = (histParsed.messages ?? []) as Array<Record<string, unknown>>;
+          const lastAssistant = [...messages].reverse().find((m) => m.role === 'assistant');
+          if (lastAssistant) {
+            const content = lastAssistant.content;
+            let msgText = '';
+            if (typeof content === 'string') msgText = content;
+            else if (Array.isArray(content)) {
+              const textPart = (content as Array<Record<string, unknown>>).find((p) => p.type === 'text');
+              if (textPart && typeof textPart.text === 'string') msgText = textPart.text;
+            }
+            if (msgText) {
+              const midMarkers = parseKanbanMarkers(msgText);
+              for (const marker of midMarkers) {
+                if (marker.type === 'update' && marker.payload.id === taskId) {
+                  try {
+                    const freshTask = await store.getTask(taskId);
+                    const patch: Record<string, unknown> = {};
+                    if (marker.payload.status) patch.status = marker.payload.status;
+                    if (marker.payload.result) patch.result = marker.payload.result;
+                    await store.updateTask(taskId, freshTask.version, patch);
+                    const p = marker.payload;
+                    if (p.sddPhase) {
+                      await store.setSddPhase(taskId, p.sddPhase as any, p.sddSummary as string || undefined);
+                    }
+                    if (p.sddGate) {
+                      await store.setSddGate(taskId, p.sddGate as string, p.sddLink as string || undefined, p.sddSummary as string || undefined);
+                    }
+                  } catch (markerErr) {
+                    // Non-fatal — marker may have already been applied
+                  }
+                }
+              }
+            }
+          }
+        } catch {
+          // Non-fatal — history fetch can fail transiently
+        }
         trackTimeout(poll, intervalMs);
         return;
       }
@@ -301,6 +346,8 @@ const runLinkSchema = z.object({
   error: z.string().optional(),
 });
 
+const executionModeSchema = z.enum(['lobster', 'persistent', 'both']).optional();
+
 const createTaskSchema = z.object({
   title: z.string().min(1).max(500),
   description: z.string().max(10_000).optional(),
@@ -314,6 +361,7 @@ const createTaskSchema = z.object({
   thinking: thinkingSchema.optional(),
   dueAt: z.number().optional(),
   estimateMin: z.number().min(0).optional(),
+  executionMode: executionModeSchema,
 });
 
 const updateTaskSchema = z.object({
@@ -326,6 +374,7 @@ const updateTaskSchema = z.object({
   labels: z.array(z.string().max(100)).max(50).optional(),
   model: z.string().max(200).optional().nullable(),
   thinking: thinkingSchema.optional().nullable(),
+  executionMode: executionModeSchema.nullable(),
   dueAt: z.number().optional().nullable(),
   estimateMin: z.number().min(0).optional().nullable(),
   actualMin: z.number().min(0).optional().nullable(),
@@ -878,8 +927,76 @@ app.post('/api/kanban/tasks/:id/execute', rateLimitGeneral, async (c) => {
     const risk = riskLabel ? riskLabel.split(':')[1] : 'full';
     const workId = ghIssue || id;
 
+    // Determine execution mode: lobster (default), persistent, or both
+    const executionMode = (task as any).executionMode || 'lobster';
+
     let taskPrompt: string;
-    if (isSddTask) {
+    if (isSddTask && (executionMode === 'persistent' || executionMode === 'both')) {
+      // Persistent mode: drive an interactive Claude Code session
+      const specDir = `.specify/specs/gh-${ghIssue || id}-${task.title.replace(/[^a-z0-9]/gi, '-').toLowerCase().slice(0, 40)}`;
+      taskPrompt = [
+        `You are executing an SDD task using PERSISTENT SESSION mode.`,
+        `You are the PROCESS ENFORCER. You drive a single interactive Claude Code session`,
+        `through the complete 31-step SDD pipeline and verify every step is followed.`,
+        ``,
+        `## Task: ${task.title}`,
+        `## Task ID: ${id}`,
+        `## GitHub Issue: ${ghIssue ? `#${ghIssue}` : '(none — create one in setup)'}`,
+        `## Description: ${taskDescription}`,
+        `## Labels: ${labels.join(', ')}`,
+        `## Spec Directory: ${specDir}`,
+        ``,
+        `## Your Protocol — READ THIS FILE FIRST`,
+        ``,
+        `Read \`.lobster/prompts/persistent-executor.md\` BEFORE doing anything else.`,
+        `It contains the complete 28-step execution protocol with YOUR CHECKS for each step.`,
+        `Follow it exactly. Every step. In order. No shortcuts.`,
+        ``,
+        `## Quick Reference`,
+        ``,
+        `**Worktree**: \`../work-${workId}\``,
+        `**Branch pattern**: \`gh-{issue}-{slug}\` from origin/main`,
+        `**Start claude**: \`claude --permission-mode bypassPermissions\` (PTY, interactive, NOT --print)`,
+        ``,
+        `**Operator gates (PAUSE and WAIT at these):**`,
+        `- clarify-gate: if [NEEDS CLARIFICATION] markers in spec → needs-input → PAUSE`,
+        `- spec-review: ALWAYS after spec+test-intent → needs-input → PAUSE`,  
+        `- pr-review: ALWAYS after PR created → review → PAUSE`,
+        ``,
+        `**Auto gates (you handle, don't stop):**`,
+        `- plan-review: quality-check yourself, continue`,
+        `- review findings: send to claude for fixes, retry up to 2x`,
+        ``,
+        `**Kanban updates**: Use [kanban:update] markers. Result is append-only log.`,
+        `Format: \`[{ISO timestamp}] [sdd:{Step}][link:{url}] {message}\``,
+        ``,
+        `## EXEC TIMEOUT RULE`,
+        `The interactive claude session can run for a long time.`,
+        `Use \`timeout: 7200\` (2 hours) when starting the PTY session.`,
+        `Use \`yieldMs: 30000\` and poll. NEVER use timeout < 7200.`,
+        ``,
+        `## Re-trigger (resuming after operator gate)`,
+        `If this is a re-trigger after operator approval:`,
+        `1. cd into worktree ../work-${workId}`,
+        `2. Read the RESUME DETECTION section in persistent-executor.md`,
+        `3. Check {SPEC_DIR}/completion-log.md to determine which steps are done`,
+        `4. Start a NEW claude session`,
+        `5. Send: "Read {SPEC_DIR}/ artifacts to resume context for: ${task.title}"`,
+        `6. Apply operator feedback if any`,
+        `7. Skip to the correct phase based on completion log`,
+        ``,
+        `**DO NOT re-run completed phases.** If spec is approved, go to plan. If plan is done, go to implement.`,
+        ``,
+        `## CRITICAL RULES`,
+        `- NEVER use claude --print. Always interactive PTY.`,
+        `- NEVER skip steps. Execute all 28 in order.`,
+        `- NEVER let claude claim tests pass without running them. Read output yourself.`,
+        `- ALWAYS verify artifacts exist after claude says it wrote them.`,
+        `- ALWAYS check spec against PRD — no invented states/fields.`,
+        `- PRD is source of truth. Constitution is non-negotiable.`,
+        `- At operator gates: update kanban (with sddPhase!) and PAUSE. Wait for approval message.`,
+      ].join('\n');
+    } else if (isSddTask) {
       taskPrompt = [
         `You are executing an SDD task. Use the Lobster pipeline — do NOT freelance the steps.`,
         ``,
@@ -1045,14 +1162,47 @@ app.post('/api/kanban/tasks/:id/execute', rateLimitGeneral, async (c) => {
       taskPrompt += `\n\n## Prior Feedback\n${feedbackBlock}`;
     }
 
-    const sessionLabel = `kb-${id}`;
+    const sessionLabelBase = `kb-${id}`;
+    // Use the sessionKey that executeTask already stored in the run
+    // so the spawn label matches what the poller will look for.
+    const sessionLabel = task.run?.sessionKey ?? `${sessionLabelBase}-${Date.now()}`;
+
+    // For persistent mode: try to resume existing session instead of killing it
+    if (executionMode === 'persistent') {
+      try {
+        const existing = await invokeGatewayTool('subagents', { action: 'list', recentMinutes: 1440 }, 10_000) as Array<{ label?: string; sessionKey?: string; status?: string }>;
+        if (Array.isArray(existing)) {
+          const alive = existing.find(s => String(s.label ?? '').startsWith(sessionLabelBase) && s.status !== 'done');
+          if (alive && alive.sessionKey) {
+            // Session is still alive! Send a resume message instead of spawning new
+            console.log(`[kanban] Persistent session found for ${id}, sending resume message`);
+            const feedbackBlock = task.feedback.length > 0
+              ? task.feedback.map(fb => `[${new Date(fb.at).toISOString()}] ${fb.by}: ${fb.note}`).join('\n')
+              : '';
+            const resumeMsg = [
+              `Operator approved the gate. Resume the pipeline.`,
+              feedbackBlock ? `\n## Operator Feedback\n${feedbackBlock}` : '',
+              `\nCheck the completion log to determine the next phase and continue.`,
+              `DO NOT re-run completed phases.`,
+            ].join('');
+            await invokeGatewayTool('sessions_send', {
+              sessionKey: alive.sessionKey,
+              message: resumeMsg,
+            }, 30_000);
+            return c.json(task);
+          }
+        }
+      } catch (err) {
+        console.warn(`[kanban] Failed to find persistent session for ${id}, will spawn new:`, err);
+      }
+    }
 
     // Kill any existing subagent session for this task to prevent accumulation.
     // Each re-trigger should replace the old session, not stack on top of it.
     try {
       const existing = await invokeGatewayTool('subagents', { action: 'list', recentMinutes: 240 }, 10_000) as Array<{ label?: string; sessionId?: string; status?: string }>;
       if (Array.isArray(existing)) {
-        const stale = existing.filter(s => s.label === sessionLabel);
+        const stale = existing.filter(s => String(s.label ?? '').startsWith(sessionLabelBase));
         for (const s of stale) {
           if (s.sessionId) {
             console.log(`[kanban] Killing stale session ${s.sessionId} for task ${id}`);
@@ -1066,7 +1216,7 @@ app.post('/api/kanban/tasks/:id/execute', rateLimitGeneral, async (c) => {
 
     const spawnArgs: Record<string, unknown> = {
       task: taskPrompt,
-      mode: 'run',
+      mode: executionMode === 'persistent' ? 'session' : 'run',
       label: sessionLabel,
       runTimeoutSeconds: 7200,
     };

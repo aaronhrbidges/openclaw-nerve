@@ -109,6 +109,7 @@ export interface KanbanTask {
   resultAt?: number;
   model?: string;
   thinking?: 'off' | 'low' | 'medium' | 'high';
+  executionMode?: 'lobster' | 'persistent' | 'both';
   dueAt?: number;
   estimateMin?: number;
   actualMin?: number;
@@ -492,6 +493,7 @@ export class KanbanStore {
     labels?: string[];
     model?: string;
     thinking?: 'off' | 'low' | 'medium' | 'high';
+    executionMode?: 'lobster' | 'persistent' | 'both';
     dueAt?: number;
     estimateMin?: number;
   }): Promise<KanbanTask> {
@@ -522,6 +524,7 @@ export class KanbanStore {
         columnOrder: maxOrder + 1,
         model: input.model,
         thinking: input.thinking,
+        executionMode: input.executionMode,
         dueAt: input.dueAt,
         estimateMin: input.estimateMin,
         feedback: [],
